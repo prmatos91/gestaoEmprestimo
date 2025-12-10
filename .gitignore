@@ -1,0 +1,10 @@
+# Python caches
+__pycache__/
+*.pyc
+
+# Variáveis de Ambiente (NUNCA suba isso para o GitHub)
+.env
+.streamlit/secrets.toml
+
+# Mac OS files
+.DS_Store
