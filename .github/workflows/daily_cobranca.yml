@@ -4,7 +4,6 @@ on:
   schedule:
     # Rodar às 12:00 UTC (09:00 Horário de Brasília)
     - cron: '0 12 * * *'
-  # Permite rodar manualmente pela interface do GitHub para testes
   workflow_dispatch:
 
 jobs:
@@ -18,17 +17,16 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
       - name: Instalar Dependências
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Executar Script de Cobrança
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          # Use a Service Role Key (não a Anon Key) para o script backend
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          WHATSAPP_API_URL: ${{ secrets.WHATSAPP_API_URL }}
-          WHATSAPP_API_KEY: ${{ secrets.WHATSAPP_API_KEY }}
+          WAHA_URL: ${{ secrets.WAHA_URL }}
+          WAHA_API_KEY: ${{ secrets.WAHA_API_KEY }}
+          WAHA_SESSION: ${{ secrets.WAHA_SESSION }}
         run: python automation_job.py
