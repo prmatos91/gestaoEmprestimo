@@ -104,9 +104,15 @@ if not st.session_state.user:
             password = st.text_input("Senha", type="password", placeholder="••••••••")
             st.write("")
             if st.form_submit_button("Entrar", use_container_width=True, type="primary"):
-                login(email, password)
+                with st.spinner("Verificando credenciais..."):
+                    login(email, password)
 else:
     update_atrasados()
+    if st.session_state.user and not st.session_state.name:
+        try:
+            _d = supabase.table("profiles").select("name").eq("id", st.session_state.user.id).execute()
+            st.session_state.name = _d.data[0].get('name') if _d.data else None
+        except: pass
     display_name = st.session_state.name or (st.session_state.user.email if st.session_state.user else '')
     st.sidebar.title(f"Olá, {display_name}")
     menu = st.sidebar.radio("Menu", ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes", "Calculadora de Atraso"])
@@ -118,7 +124,8 @@ else:
         st.title("📊 Painel Financeiro")
 
         # Alertas de vencimento
-        alertas_raw = supabase.table("loans").select("*, clients(name)").neq("status", "pago").execute().data
+        with st.spinner("Carregando dados..."):
+            alertas_raw = supabase.table("loans").select("*, clients(name)").neq("status", "pago").execute().data
         hoje = date.today()
         atrasados_lst = [l for l in alertas_raw if l['status'] == 'atrasado']
         vencem_hoje_lst = [l for l in alertas_raw if l['status'] == 'pendente' and datetime.strptime(l['due_date'], '%Y-%m-%d').date() == hoje]
@@ -190,20 +197,26 @@ else:
                 status_count = df.groupby('status').size().reset_index(name='Contratos')
                 status_saldo = df.groupby('status')['remaining_amount'].sum().reset_index()
                 status_saldo.columns = ['status', 'Saldo']
-                cor_scale = alt.Scale(domain=['pago','pendente','atrasado'], range=['#28a745','#ffc107','#dc3545'])
+                label_map = {'pago': 'Pago', 'pendente': 'Pendente', 'atrasado': 'Atrasado'}
+                status_count['Status'] = status_count['status'].map(label_map)
+                status_saldo['Status'] = status_saldo['status'].map(label_map)
+                cor_scale = alt.Scale(domain=['pago','pendente','atrasado'], range=['#2ecc71','#f39c12','#e74c3c'])
                 with gc1:
-                    c_count = alt.Chart(status_count).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-                        x=alt.X('status:N', title='Status', axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y('Contratos:Q', title='Nº Contratos'),
-                        color=alt.Color('status:N', scale=cor_scale, legend=None)
-                    ).properties(title='Contratos por Status', height=220)
+                    c_count = alt.Chart(status_count).mark_arc(innerRadius=55, outerRadius=95).encode(
+                        theta=alt.Theta('Contratos:Q'),
+                        color=alt.Color('status:N', scale=cor_scale, legend=alt.Legend(title='Status')),
+                        tooltip=[alt.Tooltip('Status:N', title='Status'), alt.Tooltip('Contratos:Q', title='Contratos')]
+                    ).properties(title='Contratos por Status', height=240)
                     st.altair_chart(c_count, use_container_width=True)
                 with gc2:
-                    c_saldo = alt.Chart(status_saldo).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-                        x=alt.X('status:N', title='Status', axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y('Saldo:Q', title='Saldo (R$)'),
-                        color=alt.Color('status:N', scale=cor_scale, legend=None)
-                    ).properties(title='Saldo Devedor por Status', height=220)
+                    c_saldo = alt.Chart(status_saldo).mark_bar(
+                        cornerRadiusTopLeft=6, cornerRadiusTopRight=6
+                    ).encode(
+                        x=alt.X('Status:N', title=None, axis=alt.Axis(labelAngle=0, labelFontSize=13)),
+                        y=alt.Y('Saldo:Q', title='Saldo Devedor (R$)', axis=alt.Axis(format=',.0f')),
+                        color=alt.Color('status:N', scale=cor_scale, legend=None),
+                        tooltip=[alt.Tooltip('Status:N', title='Status'), alt.Tooltip('Saldo:Q', title='Saldo (R$)', format=',.2f')]
+                    ).properties(title='Saldo Devedor por Status', height=240)
                     st.altair_chart(c_saldo, use_container_width=True)
             else: st.warning("Sem dados para o filtro.")
         else: st.info("Sem empréstimos.")
@@ -221,7 +234,8 @@ else:
 
         q = supabase.table("loans").select("*, clients(name, cpf)").neq("status", "pago")
         if target_ids: q = q.in_("client_id", target_ids)
-        loans = q.execute().data
+        with st.spinner("Carregando contratos..."):
+            loans = q.execute().data
         loans = sorted(loans, key=lambda x: x['due_date'])
 
         if loans:
@@ -243,9 +257,9 @@ else:
             # Card Informativo
             st.info(f"""
             **Resumo do Contrato:**
-            - 💰 Saldo Devedor (Principal): **R$ {saldo:,.2f}**
-            - 📈 Juros da Parcela ({d['interest_rate']}% sobre R$ {float(d['original_amount']):,.2f}): **R$ {juros:,.2f}**
-            - 🏁 Total para Quitação Hoje: **R$ {total_quit:,.2f}**
+            - 💰 Saldo Devedor (Principal): **R\\$ {saldo:,.2f}**
+            - 📈 Juros da Parcela ({d['interest_rate']}% sobre R\\$ {float(d['original_amount']):,.2f}): **R\\$ {juros:,.2f}**
+            - 🏁 Total para Quitação Hoje: **R\\$ {total_quit:,.2f}**
             """)
 
             # Modo fora do form para atualizar val_sug em tempo real
@@ -521,23 +535,30 @@ else:
 
                         if st.button("Ver Histórico Pagamentos", key=c['id']):
                             ids = [l['id'] for l in loans]
-                            logs = supabase.table("payments").select("*, profiles!owner_id(email)").in_("loan_id", ids).order("paid_at", desc=True).execute().data
+                            with st.spinner("Carregando histórico..."):
+                                logs = supabase.table("payments").select("*, profiles!owner_id(email)").in_("loan_id", ids).order("paid_at", desc=True).execute().data
                             if logs:
-                                # Prepara dados para tabela
                                 data_logs = []
                                 for l in logs:
                                     dt_br = datetime.strptime(l['paid_at'], '%Y-%m-%d').strftime('%d/%m/%Y')
-                                    comprovante = f"[Ver]({l['proof_url']})" if l.get('proof_url') else "-"
                                     prof = l.get('profiles')
                                     resp = prof['email'] if isinstance(prof, dict) else l.get('owner_id', '-')
                                     data_logs.append({
                                         "Data": dt_br,
-                                        "Valor": f"R$ {l['amount']:,.2f}",
+                                        "Valor (R$)": float(l['amount']),
                                         "Tipo": l['payment_type'],
-                                        "Resp": resp,
-                                        "Comp": comprovante
+                                        "Responsável": resp,
+                                        "Comprovante": l.get('proof_url') or ""
                                     })
-                                st.markdown(pd.DataFrame(data_logs).to_markdown(index=False))
+                                st.dataframe(
+                                    pd.DataFrame(data_logs),
+                                    column_config={
+                                        "Valor (R$)": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f"),
+                                        "Comprovante": st.column_config.LinkColumn("Comprovante", display_text="Ver")
+                                    },
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
                             else: st.info("Sem pagamentos.")
                     else: st.info("Sem histórico.")
 
@@ -569,8 +590,8 @@ else:
 
             st.info(f"""
 **Memória de cálculo:**
-- Saldo devedor: **R$ {saldo_calc:,.2f}**
-- Multa fixa: **R$ {multa:,.2f}**
-- Juros por atraso: R$ {juros_dia:,.2f}/dia × {dias} dias = **R$ {total_juros_atraso:,.2f}**
-- **Total: R$ {saldo_calc:,.2f} + R$ {multa:,.2f} + R$ {total_juros_atraso:,.2f} = R$ {total_cobrar:,.2f}**
+- Saldo devedor: **R\\$ {saldo_calc:,.2f}**
+- Multa fixa: **R\\$ {multa:,.2f}**
+- Juros por atraso: R\\$ {juros_dia:,.2f}/dia × {dias} dias = **R\\$ {total_juros_atraso:,.2f}**
+- **Total: R\\$ {saldo_calc:,.2f} + R\\$ {multa:,.2f} + R\\$ {total_juros_atraso:,.2f} = R\\$ {total_cobrar:,.2f}**
             """)
