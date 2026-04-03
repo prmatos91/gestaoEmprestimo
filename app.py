@@ -56,7 +56,7 @@ def login(email, password, nome):
         st.session_state.session = res.session
         st.session_state.user = res.user
         st.session_state.name = nome.strip() if nome and nome.strip() else None
-        st.session_state.role = 'employee'
+        st.session_state.role = fetch_role(res.user.id, res.session.access_token)
     except Exception:
         st.error("Credenciais inválidas.")
         return
@@ -71,11 +71,29 @@ def logout():
 # --- 3. UPLOAD ---
 def upload_file(file, folder="docs"):
     try:
-        ext = file.name.split('.')[-1]
         name = f"{folder}/{datetime.now().timestamp()}_{file.name.replace(' ', '_')}"
         supabase.storage.from_("documents").upload(name, file.getvalue(), {"content-type": file.type})
-        return supabase.storage.from_("documents").get_public_url(name), file.name
+        pub_url = supabase.storage.from_("documents").get_public_url(name)
+        if isinstance(pub_url, dict):
+            pub_url = pub_url.get('publicUrl') or pub_url.get('publicURL', '')
+        return pub_url, file.name
     except: return None, None
+
+def fetch_role(user_id, access_token):
+    """Busca role via REST direto com Bearer token — independente do estado interno do client."""
+    try:
+        resp = requests.get(
+            f"{url}/rest/v1/profiles",
+            params={"select": "role", "id": f"eq.{user_id}"},
+            headers={"apikey": key, "Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        data = resp.json()
+        if isinstance(data, list) and data:
+            return data[0].get('role', 'employee')
+    except:
+        pass
+    return 'employee'
 
 # --- 4. ATUALIZAR STATUS ATRASADO ---
 def update_atrasados():
@@ -112,7 +130,10 @@ else:
     update_atrasados()
     display_name = st.session_state.name or (st.session_state.user.email if st.session_state.user else '')
     st.sidebar.title(f"Olá, {display_name}")
-    menu = st.sidebar.radio("Menu", ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes", "Calculadora de Atraso"])
+    _menu_items = ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes", "Calculadora de Atraso"]
+    if st.session_state.role == 'admin':
+        _menu_items.append("Gerenciar Usuários")
+    menu = st.sidebar.radio("Menu", _menu_items)
     st.sidebar.divider()
     if st.sidebar.button("Sair"): logout()
 
@@ -488,21 +509,43 @@ else:
     # --- 5. BASE DE CLIENTES ---
     elif menu == "Base de Clientes":
         st.title("📂 Carteira")
+        is_admin = st.session_state.role == 'admin'
         search = st.text_input("Buscar (Nome/CPF)")
         q = supabase.table("clients").select("*")
         if search: q = q.or_(f"name.ilike.%{search}%,cpf.ilike.%{search}%")
-        clients = q.execute().data
+        with st.spinner("Carregando clientes..."):
+            clients = q.execute().data
 
         if clients:
             for c in clients:
                 icon = "🟢" if c['reputation']=='BOM' else "🔴" if c['reputation']=='RUIM' else "⚪"
                 with st.expander(f"{icon} {c['name']} ({c['cpf']})"):
-                    hcol1, hcol2 = st.columns([5, 1])
-                    with hcol1:
-                        st.write(f"📱 {c['phone']} | 📍 {c['address']}")
-                    with hcol2:
-                        if st.button("✏️ Editar", key=f"editbtn_{c['id']}"):
-                            st.session_state.edit_client_id = None if st.session_state.get('edit_client_id') == c['id'] else c['id']
+                    hcols = st.columns([4, 1, 1]) if is_admin else st.columns([5, 1])
+                    hcols[0].write(f"📱 {c['phone']} | 📍 {c['address']}")
+                    if hcols[1].button("✏️ Editar", key=f"editbtn_{c['id']}"):
+                        st.session_state.edit_client_id = None if st.session_state.get('edit_client_id') == c['id'] else c['id']
+                        st.rerun()
+                    if is_admin and hcols[2].button("🗑️ Excluir", key=f"delbtn_{c['id']}", type="secondary"):
+                        st.session_state[f'confirm_del_{c["id"]}'] = True
+
+                    if is_admin and st.session_state.get(f'confirm_del_{c["id"]}'):
+                        st.warning("⚠️ Tem certeza que deseja excluir este cliente? Esta ação não pode ser desfeita.")
+                        cc1, cc2 = st.columns(2)
+                        if cc1.button("✅ Sim, excluir", key=f"yes_del_{c['id']}", type="primary"):
+                            active = supabase.table("loans").select("id").eq("client_id", c['id']).neq("status","pago").execute().data
+                            if active:
+                                st.error("❌ Cliente possui contratos ativos. Quite todos os contratos antes de excluir.")
+                                st.session_state.pop(f'confirm_del_{c["id"]}', None)
+                            else:
+                                try:
+                                    supabase.table("client_documents").delete().eq("client_id", c['id']).execute()
+                                    supabase.table("loans").delete().eq("client_id", c['id']).execute()
+                                    supabase.table("clients").delete().eq("id", c['id']).execute()
+                                    st.session_state.pop(f'confirm_del_{c["id"]}', None)
+                                    st.rerun()
+                                except Exception as e: st.error(f"Erro ao excluir: {e}")
+                        if cc2.button("❌ Cancelar", key=f"cancel_del_{c['id']}"):
+                            st.session_state.pop(f'confirm_del_{c["id"]}', None)
                             st.rerun()
 
                     if st.session_state.get('edit_client_id') == c['id']:
@@ -527,19 +570,64 @@ else:
                                 except Exception as e: st.error(f"Erro: {e}")
                         st.divider()
 
-                    loans = supabase.table("loans").select("*").eq("client_id", c['id']).execute().data
-                    if loans:
-                        st.subheader("Contratos")
-                        df = pd.DataFrame(loans)
-                        # Formata data para BR na tabela
-                        df['Vencimento'] = pd.to_datetime(df['due_date']).dt.strftime('%d/%m/%Y')
-                        df = df[['Vencimento', 'original_amount', 'remaining_amount', 'status']].rename(columns={
-                            'original_amount': 'Valor', 'remaining_amount': 'Saldo', 'status': 'Status'
-                        })
-                        st.dataframe(df, use_container_width=True)
+                    tab_docs, tab_loans, tab_pag = st.tabs(["📎 Documentos", "💰 Contratos", "💸 Pagamentos"])
 
-                        if st.button("Ver Histórico Pagamentos", key=c['id']):
-                            ids = [l['id'] for l in loans]
+                    with tab_docs:
+                        docs = supabase.table("client_documents").select("*").eq("client_id", c['id']).execute().data
+                        if docs:
+                            for doc in docs:
+                                dc1, dc2, dc3 = st.columns([4, 2, 1])
+                                dc1.write(f"📄 {doc.get('file_name') or 'Documento'}")
+                                if doc.get('file_url'):
+                                    dc2.markdown(f"[🔗 Abrir]({doc['file_url']})")
+                                if is_admin and dc3.button("🗑️", key=f"del_doc_{doc['id']}", help="Excluir documento"):
+                                    supabase.table("client_documents").delete().eq("id", doc['id']).execute()
+                                    st.rerun()
+                        else:
+                            st.info("Nenhum documento cadastrado.")
+                        st.divider()
+                        with st.form(f"upload_doc_{c['id']}"):
+                            new_docs = st.file_uploader("Adicionar documentos", accept_multiple_files=True, type=['jpg','png','pdf'])
+                            if st.form_submit_button("📤 Enviar"):
+                                if new_docs:
+                                    for f in new_docs:
+                                        u, n = upload_file(f, c['id'])
+                                        if u:
+                                            supabase.table("client_documents").insert({"client_id": c['id'], "file_name": n, "file_url": u}).execute()
+                                    st.success("Documento(s) enviado(s)!")
+                                    st.rerun()
+                                else:
+                                    st.warning("Selecione ao menos um arquivo.")
+
+                    with tab_loans:
+                        loans = supabase.table("loans").select("*").eq("client_id", c['id']).execute().data
+                        if loans:
+                            df_l = pd.DataFrame(loans)
+                            df_l['Vencimento'] = pd.to_datetime(df_l['due_date']).dt.strftime('%d/%m/%Y')
+                            df_l = df_l[['Vencimento', 'original_amount', 'remaining_amount', 'interest_rate', 'status']].rename(columns={
+                                'original_amount': 'Valor', 'remaining_amount': 'Saldo', 'interest_rate': 'Juros (%)', 'status': 'Status'
+                            })
+                            st.dataframe(df_l, use_container_width=True)
+                            if is_admin:
+                                st.markdown("**✏️ Editar juros de um contrato:**")
+                                loan_opts = {f"Vence {l['due_date']} | Saldo R$ {float(l['remaining_amount']):.2f}": l for l in loans}
+                                sel_loan_lbl = st.selectbox("Selecione o contrato", list(loan_opts.keys()), key=f"sel_loan_{c['id']}")
+                                sel_loan = loan_opts[sel_loan_lbl]
+                                with st.form(f"edit_loan_{c['id']}"):
+                                    new_rate = st.number_input("Nova Taxa de Juros (%)", value=float(sel_loan['interest_rate']), step=0.5)
+                                    if st.form_submit_button("💾 Salvar Juros"):
+                                        try:
+                                            supabase.table("loans").update({"interest_rate": new_rate}).eq("id", sel_loan['id']).execute()
+                                            st.success("✅ Juros atualizado!")
+                                            st.rerun()
+                                        except Exception as e: st.error(f"Erro: {e}")
+                        else:
+                            st.info("Nenhum contrato.")
+
+                    with tab_pag:
+                        loans_ids = supabase.table("loans").select("id").eq("client_id", c['id']).execute().data
+                        if loans_ids:
+                            ids = [l['id'] for l in loans_ids]
                             with st.spinner("Carregando histórico..."):
                                 logs = supabase.table("payments").select("*, profiles!owner_id(email)").in_("loan_id", ids).order("paid_at", desc=True).execute().data
                             if logs:
@@ -553,19 +641,23 @@ else:
                                         "Valor (R$)": float(l['amount']),
                                         "Tipo": l['payment_type'],
                                         "Responsável": resp,
-                                        "Comprovante": l.get('proof_url') or ""
+                                        "Comprovante": l.get('proof_url') or "",
                                     })
                                 st.dataframe(
                                     pd.DataFrame(data_logs),
                                     column_config={
                                         "Valor (R$)": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f"),
-                                        "Comprovante": st.column_config.LinkColumn("Comprovante", display_text="Ver")
+                                        "Comprovante": st.column_config.LinkColumn("Comprovante", display_text="Ver"),
                                     },
                                     use_container_width=True,
-                                    hide_index=True
+                                    hide_index=True,
                                 )
-                            else: st.info("Sem pagamentos.")
-                    else: st.info("Sem histórico.")
+                            else:
+                                st.info("Sem pagamentos registrados.")
+                        else:
+                            st.info("Sem contratos.")
+        else:
+            st.info("Nenhum cliente encontrado.")
 
     # --- 6. CALCULADORA DE ATRASO ---
     elif menu == "Calculadora de Atraso":
@@ -600,3 +692,70 @@ else:
 - Juros por atraso: R\\$ {juros_dia:,.2f}/dia × {dias} dias = **R\\$ {total_juros_atraso:,.2f}**
 - **Total: R\\$ {saldo_calc:,.2f} + R\\$ {multa:,.2f} + R\\$ {total_juros_atraso:,.2f} = R\\$ {total_cobrar:,.2f}**
             """)
+
+    # --- 7. GERENCIAR USUÁRIOS (somente admin) ---
+    elif menu == "Gerenciar Usuários":
+        if st.session_state.role != 'admin':
+            st.error("Acesso negado.")
+            st.stop()
+        st.title("👥 Gerenciar Usuários")
+        tab_criar, tab_senha, tab_lista = st.tabs(["➕ Criar Funcionário", "🔑 Alterar Minha Senha", "📋 Funcionários"])
+
+        with tab_criar:
+            st.subheader("Criar conta de funcionário")
+            with st.form("new_employee"):
+                n_name = st.text_input("Nome do Funcionário")
+                n_email = st.text_input("E-mail")
+                n_pass = st.text_input("Senha Temporária", type="password")
+                n_pass2 = st.text_input("Confirmar Senha", type="password")
+                if st.form_submit_button("✅ Criar Conta", type="primary"):
+                    errs = []
+                    if not (n_name and n_email and n_pass): errs.append("Preencha todos os campos.")
+                    if n_pass != n_pass2: errs.append("Senhas não conferem.")
+                    if n_email and not validate_email(n_email): errs.append("E-mail inválido.")
+                    if len(n_pass) < 6: errs.append("Senha deve ter ao menos 6 caracteres.")
+                    for er in errs: st.error(er)
+                    if not errs:
+                        try:
+                            temp = create_client(url, key)
+                            res_new = temp.auth.sign_up({"email": n_email, "password": n_pass})
+                            if res_new.user:
+                                try:
+                                    supabase.table("profiles").update({"name": n_name}).eq("id", res_new.user.id).execute()
+                                except: pass
+                                st.success(f"✅ Funcionário **{n_name}** cadastrado com e-mail `{n_email}`. Informe a senha `{n_pass}` para o acesso inicial.")
+                                st.info("ℹ️ Se o Supabase exigir confirmação de e-mail, o funcionário precisa confirmar antes de logar. Você pode desativar isso em Authentication → Settings no painel Supabase.")
+                            else:
+                                st.error("Não foi possível criar o usuário. O e-mail já pode estar cadastrado.")
+                        except Exception as e:
+                            st.error(f"Erro: {e}")
+
+        with tab_senha:
+            st.subheader("Alterar sua senha")
+            with st.form("change_pass"):
+                new_p = st.text_input("Nova Senha", type="password")
+                new_p2 = st.text_input("Confirmar Nova Senha", type="password")
+                if st.form_submit_button("🔑 Alterar Senha", type="primary"):
+                    if not new_p: st.error("Informe a nova senha.")
+                    elif new_p != new_p2: st.error("Senhas não conferem.")
+                    elif len(new_p) < 6: st.error("Senha deve ter ao menos 6 caracteres.")
+                    else:
+                        try:
+                            supabase.auth.update_user({"password": new_p})
+                            st.success("✅ Senha alterada com sucesso!")
+                        except Exception as e:
+                            st.error(f"Erro: {e}")
+
+        with tab_lista:
+            st.subheader("Usuários cadastrados")
+            try:
+                profs = supabase.table("profiles").select("name, email, role").execute().data
+                if profs:
+                    df_pr = pd.DataFrame(profs)
+                    df_pr.columns = ['Nome', 'E-mail', 'Função']
+                    df_pr['Função'] = df_pr['Função'].map({'admin': '👑 Admin', 'employee': '👤 Funcionário'}).fillna('—')
+                    st.dataframe(df_pr, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Nenhum usuário encontrado.")
+            except Exception as e:
+                st.info("Sem permissão para listar usuários ou nenhum encontrado.")
