@@ -46,6 +46,7 @@ def init_session():
     if st.session_state.session:
         try:
             supabase.auth.set_session(st.session_state.session.access_token, st.session_state.session.refresh_token)
+            supabase.postgrest.auth(st.session_state.session.access_token)
         except: logout()
 
 def login(email, password):
@@ -55,6 +56,7 @@ def login(email, password):
         st.session_state.user = res.user
         # Set session BEFORE querying profiles so RLS uses the authenticated user
         supabase.auth.set_session(res.session.access_token, res.session.refresh_token)
+        supabase.postgrest.auth(res.session.access_token)
         try:
             d = supabase.table("profiles").select("role, name").eq("id", res.user.id).execute()
             st.session_state.role = d.data[0]['role'] if d.data else 'employee'
