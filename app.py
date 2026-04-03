@@ -82,7 +82,8 @@ if not st.session_state.user:
             email = st.text_input("E-mail"); password = st.text_input("Senha", type="password")
             if st.form_submit_button("Entrar", use_container_width=True): login(email, password)
 else:
-    st.sidebar.title(f"Olá, {st.session_state.role}")
+    user_email = st.session_state.user.email if st.session_state.user else ''
+    st.sidebar.title(f"Olá, {user_email}")
     menu = st.sidebar.radio("Menu", ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes"])
     st.sidebar.divider()
     if st.sidebar.button("Sair"): logout()
@@ -149,16 +150,16 @@ else:
             sel = st.selectbox("Selecione o Contrato", list(opts.keys()))
             d = opts[sel]
 
-            # Cálculos (juros sobre saldo devedor atual)
+            # Cálculos (juros sempre sobre o valor original emprestado)
             saldo = float(d['remaining_amount'])
-            juros = saldo * (float(d['interest_rate'])/100)
+            juros = float(d['original_amount']) * (float(d['interest_rate'])/100)
             total_quit = saldo + juros
 
             # Card Informativo
             st.info(f"""
             **Resumo do Contrato:**
             - 💰 Saldo Devedor (Principal): **R$ {saldo:,.2f}**
-            - 📈 Juros da Parcela ({d['interest_rate']}%): **R$ {juros:,.2f}**
+            - 📈 Juros da Parcela ({d['interest_rate']}% sobre R$ {float(d['original_amount']):,.2f}): **R$ {juros:,.2f}**
             - 🏁 Total para Quitação Hoje: **R$ {total_quit:,.2f}**
             """)
 
@@ -286,17 +287,20 @@ else:
         # --- IMPORTAÇÃO EM MASSA VIA CSV ---
         with st.expander("📥 Importar clientes via CSV"):
             st.markdown("""
-**Formato esperado do CSV** (em ordem, com cabeçalho):
-
-| nome | cpf | celular | endereco | referencia | rg | email |
-|------|-----|---------|----------|------------|-----|-------|
-
+**Formato esperado do CSV** (com cabeçalho):
 - Colunas obrigatórias: `nome`, `cpf`, `celular`, `endereco`, `referencia`
 - Colunas opcionais: `rg`, `email`
 - CPF: apenas números ou formatado (000.000.000-00)
-- Celular: DDD + 9 dígitos (apenas números)
+- Celular: DDD + 9 dígitos (apenas números ou só dígitos)
             """)
-            csv_file = st.file_uploader("Selecione o arquivo CSV", type=["csv"], key="csv_import")
+            csv_template = "nome,cpf,celular,endereco,referencia,rg,email\nJoão Silva,123.456.789-09,11987654321,Rua das Flores 10 Apto 2 São Paulo SP,Maria Silva (esposa),12345678,joao@email.com\nMaria Oliveira,987.654.321-00,21976543210,Av. Brasil 500 Rio de Janeiro RJ,Carlos Oliveira (irmão),,"
+            st.download_button(
+                label="💾 Baixar modelo CSV",
+                data=csv_template.encode('utf-8-sig'),
+                file_name="modelo_importacao_clientes.csv",
+                mime="text/csv"
+            )
+            csv_file = st.file_uploader("Selecione o arquivo CSV preenchido", type=["csv"], key="csv_import")
             if csv_file:
                 try:
                     df_csv = pd.read_csv(csv_file, dtype=str).fillna("")
