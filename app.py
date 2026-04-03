@@ -1,11 +1,12 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import re
+import altair as alt
 
 # --- 1. CONFIGURAÇÃO INICIAL E VALIDADORES ---
-st.set_page_config(page_title="Sistema de Gestão de Empréstimos", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Gestão de Empréstimos", layout="wide", page_icon="🏦")
 
 # --- Validadores ---
 def validate_email(email):
@@ -41,6 +42,7 @@ def init_session():
     if 'user' not in st.session_state: st.session_state.user = None
     if 'role' not in st.session_state: st.session_state.role = None
     if 'name' not in st.session_state: st.session_state.name = None
+    if 'edit_client_id' not in st.session_state: st.session_state.edit_client_id = None
     if st.session_state.session:
         try:
             supabase.auth.set_session(st.session_state.session.access_token, st.session_state.session.refresh_token)
@@ -55,9 +57,12 @@ def login(email, password):
             d = supabase.table("profiles").select("role, name").eq("id", res.user.id).execute()
             st.session_state.role = d.data[0]['role'] if d.data else 'employee'
             st.session_state.name = d.data[0].get('name') if d.data else None
-        except: st.session_state.role = 'employee'
-        st.rerun()
-    except: st.error("Credenciais inválidas.")
+        except:
+            st.session_state.role = 'employee'
+    except Exception:
+        st.error("Credenciais inválidas.")
+        return
+    st.rerun()
 
 def logout():
     supabase.auth.sign_out()
@@ -74,17 +79,34 @@ def upload_file(file, folder="docs"):
         return supabase.storage.from_("documents").get_public_url(name), file.name
     except: return None, None
 
-# --- 4. APP PRINCIPAL ---
+# --- 4. ATUALIZAR STATUS ATRASADO ---
+def update_atrasados():
+    try:
+        supabase.table("loans").update({"status": "atrasado"}).eq("status", "pendente").lt("due_date", str(date.today())).execute()
+    except: pass
+
+# --- 5. APP PRINCIPAL ---
 init_session()
 
 if not st.session_state.user:
-    st.markdown("<h1 style='text-align: center;'>🏦 LoanManager System</h1>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1,2,1])
+    st.markdown("""
+    <div style='text-align:center; padding: 50px 0 30px 0;'>
+        <div style='font-size: 3.5rem; margin-bottom: 8px;'>🏦</div>
+        <h1 style='font-size: 2.2rem; margin: 0 0 8px 0;'>Gestão de Empréstimos</h1>
+        <p style='color: #888; margin: 0; font-size: 1rem;'>Faça login para acessar o sistema</p>
+    </div>
+    """, unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 1.2, 1])
     with c2:
         with st.form("login"):
-            email = st.text_input("E-mail"); password = st.text_input("Senha", type="password")
-            if st.form_submit_button("Entrar", use_container_width=True): login(email, password)
+            st.markdown("#### 🔐 Acesse sua conta")
+            email = st.text_input("E-mail", placeholder="seu@email.com")
+            password = st.text_input("Senha", type="password", placeholder="••••••••")
+            st.write("")
+            if st.form_submit_button("Entrar", use_container_width=True, type="primary"):
+                login(email, password)
 else:
+    update_atrasados()
     display_name = st.session_state.name or (st.session_state.user.email if st.session_state.user else '')
     st.sidebar.title(f"Olá, {display_name}")
     menu = st.sidebar.radio("Menu", ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes", "Calculadora de Atraso"])
@@ -94,6 +116,36 @@ else:
     # --- 1. PAINEL FINANCEIRO ---
     if menu == "Painel Financeiro":
         st.title("📊 Painel Financeiro")
+
+        # Alertas de vencimento
+        alertas_raw = supabase.table("loans").select("*, clients(name)").neq("status", "pago").execute().data
+        hoje = date.today()
+        atrasados_lst = [l for l in alertas_raw if l['status'] == 'atrasado']
+        vencem_hoje_lst = [l for l in alertas_raw if l['status'] == 'pendente' and datetime.strptime(l['due_date'], '%Y-%m-%d').date() == hoje]
+        vencem_semana_lst = [l for l in alertas_raw if l['status'] == 'pendente' and hoje < datetime.strptime(l['due_date'], '%Y-%m-%d').date() <= hoje + timedelta(days=7)]
+
+        al1, al2, al3 = st.columns(3)
+        with al1:
+            if atrasados_lst:
+                st.error(f"🔴 **{len(atrasados_lst)} contrato(s) atrasado(s)**")
+                for l in atrasados_lst[:3]: st.caption(f"↳ {l['clients']['name']}")
+                if len(atrasados_lst) > 3: st.caption(f"↳ ... e mais {len(atrasados_lst)-3}")
+            else:
+                st.success("✅ Nenhum contrato atrasado")
+        with al2:
+            if vencem_hoje_lst:
+                st.warning(f"🟡 **{len(vencem_hoje_lst)} vence(m) hoje**")
+                for l in vencem_hoje_lst[:3]: st.caption(f"↳ {l['clients']['name']}")
+            else:
+                st.success("✅ Nenhum vence hoje")
+        with al3:
+            if vencem_semana_lst:
+                st.warning(f"🟠 **{len(vencem_semana_lst)} vence(m) essa semana**")
+                for l in vencem_semana_lst[:3]: st.caption(f"↳ {l['clients']['name']}")
+            else:
+                st.success("✅ Nenhum vence essa semana")
+
+        st.divider()
         with st.expander("🔍 Filtros", expanded=True):
             c1, c2 = st.columns(2)
             dr = c1.date_input("Período (Vencimento)", (date(date.today().year, 1, 1), date.today()), format="DD/MM/YYYY")
@@ -130,6 +182,29 @@ else:
                 
                 def color(v): return f"background-color: {'#d4edda' if v=='pago' else '#f8d7da' if v=='atrasado' else '#fff3cd'}; color: black"
                 st.dataframe(grid.style.map(color, subset=['Status']).format({'Valor Original': 'R$ {:.2f}', 'Saldo Devedor': 'R$ {:.2f}'}), use_container_width=True)
+
+                # Gráficos de distribuição
+                st.divider()
+                st.subheader("📊 Distribuição por Status")
+                gc1, gc2 = st.columns(2)
+                status_count = df.groupby('status').size().reset_index(name='Contratos')
+                status_saldo = df.groupby('status')['remaining_amount'].sum().reset_index()
+                status_saldo.columns = ['status', 'Saldo']
+                cor_scale = alt.Scale(domain=['pago','pendente','atrasado'], range=['#28a745','#ffc107','#dc3545'])
+                with gc1:
+                    c_count = alt.Chart(status_count).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+                        x=alt.X('status:N', title='Status', axis=alt.Axis(labelAngle=0)),
+                        y=alt.Y('Contratos:Q', title='Nº Contratos'),
+                        color=alt.Color('status:N', scale=cor_scale, legend=None)
+                    ).properties(title='Contratos por Status', height=220)
+                    st.altair_chart(c_count, use_container_width=True)
+                with gc2:
+                    c_saldo = alt.Chart(status_saldo).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+                        x=alt.X('status:N', title='Status', axis=alt.Axis(labelAngle=0)),
+                        y=alt.Y('Saldo:Q', title='Saldo (R$)'),
+                        color=alt.Color('status:N', scale=cor_scale, legend=None)
+                    ).properties(title='Saldo Devedor por Status', height=220)
+                    st.altair_chart(c_saldo, use_container_width=True)
             else: st.warning("Sem dados para o filtro.")
         else: st.info("Sem empréstimos.")
 
@@ -147,9 +222,16 @@ else:
         q = supabase.table("loans").select("*, clients(name, cpf)").neq("status", "pago")
         if target_ids: q = q.in_("client_id", target_ids)
         loans = q.execute().data
+        loans = sorted(loans, key=lambda x: x['due_date'])
 
         if loans:
-            opts = {f"{l['clients']['name']} | Vence: {datetime.strptime(l['due_date'], '%Y-%m-%d').strftime('%d/%m/%Y')}": l for l in loans}
+            def make_label(l):
+                due = datetime.strptime(l['due_date'], '%Y-%m-%d').date()
+                delta = (date.today() - due).days
+                icon = "🔴" if l['status'] == 'atrasado' else ("🟡" if delta == 0 else "⚪")
+                atraso = f"  ⚠️ {delta}d em atraso" if delta > 0 else ""
+                return f"{icon} {l['clients']['name']} | Vence: {due.strftime('%d/%m/%Y')}{atraso}"
+            opts = {make_label(l): l for l in loans}
             sel = st.selectbox("Selecione o Contrato", list(opts.keys()))
             d = opts[sel]
 
@@ -180,54 +262,52 @@ else:
                 # Upload Comprovante
                 proof = st.file_uploader("Anexar Comprovante (Opcional)", type=['jpg','png','pdf'])
 
+                confirm_quit = True
+                if mode == "Quitação Total":
+                    confirm_quit = st.checkbox(f"✅ Confirmo a quitação total de **R$ {total_quit:,.2f}**. Esta ação não pode ser desfeita.")
+
                 if st.form_submit_button("Confirmar Baixa", type="primary"):
-                    err = None
-                    
-                    # --- VALIDAÇÕES ESTRITAS ---
-                    if mode == "Somente Juros":
-                        if val < (juros - 0.1): err = f"Valor insuficiente. Mínimo para juros: R$ {juros:,.2f}"
-                    
-                    elif mode == "Juros + Amortização":
-                        # AQUI ESTÁ A TRAVA: Deve pagar o juros E sobrar algo
-                        if val <= juros:
-                            err = f"ERRO: O valor (R$ {val}) cobre apenas o juros ou menos. Para amortizar, precisa ser MAIOR que R$ {juros:,.2f}."
-                    
-                    elif mode == "Quitação Total":
-                        if val < (total_quit - 1.0): err = f"Para quitar, o valor deve ser R$ {total_quit:,.2f}"
-
-                    if err: st.error(err)
+                    if mode == "Quitação Total" and not confirm_quit:
+                        st.error("⚠️ Marque a confirmação acima para prosseguir com a quitação.")
                     else:
-                        try:
-                            # 1. Upload Comprovante
-                            proof_url = None
-                            if proof:
-                                proof_url, _ = upload_file(proof, f"proofs/{d['id']}")
+                        err = None
+                        if mode == "Somente Juros":
+                            if val < (juros - 0.1): err = f"Valor insuficiente. Mínimo para juros: R$ {juros:,.2f}"
+                        elif mode == "Juros + Amortização":
+                            if val <= juros:
+                                err = f"O valor (R$ {val:.2f}) não cobre os juros. Para amortizar, precisa ser MAIOR que R$ {juros:,.2f}."
+                        elif mode == "Quitação Total":
+                            if val < (total_quit - 1.0): err = f"Para quitar, o valor deve ser R$ {total_quit:,.2f}"
 
-                            # 2. Reputação
-                            due_dt = datetime.strptime(d['due_date'], '%Y-%m-%d').date()
-                            rep = 'BOM' if dt <= due_dt else 'RUIM'
-                            supabase.table("clients").update({"reputation": rep}).eq("id", d['client_id']).execute()
+                        if err: st.error(err)
+                        else:
+                            try:
+                                proof_url = None
+                                if proof:
+                                    proof_url, _ = upload_file(proof, f"proofs/{d['id']}")
 
-                            # 3. Insert Pagamento
-                            type_db = "JUROS" if mode == "Somente Juros" else "AMORTIZACAO" if mode == "Juros + Amortização" else "QUITACAO"
-                            supabase.table("payments").insert({
-                                "loan_id": d['id'], "amount": val, "payment_type": type_db,
-                                "paid_at": str(dt), "owner_id": st.session_state.user.id,
-                                "proof_url": proof_url
-                            }).execute()
+                                due_dt = datetime.strptime(d['due_date'], '%Y-%m-%d').date()
+                                rep = 'BOM' if dt <= due_dt else 'RUIM'
+                                supabase.table("clients").update({"reputation": rep}).eq("id", d['client_id']).execute()
 
-                            # 4. Atualizar Saldo
-                            new_bal = saldo
-                            if mode == "Juros + Amortização": new_bal -= (val - juros)
-                            elif mode == "Quitação Total": new_bal = 0
-                            
-                            stt = 'pago' if new_bal <= 0.5 else 'pendente'
-                            supabase.table("loans").update({"remaining_amount": new_bal, "status": stt}).eq("id", d['id']).execute()
-                            
-                            st.balloons()
-                            st.success("Pagamento registrado!")
-                            st.rerun()
-                        except Exception as e: st.error(f"Erro: {e}")
+                                type_db = "JUROS" if mode == "Somente Juros" else "AMORTIZACAO" if mode == "Juros + Amortização" else "QUITACAO"
+                                supabase.table("payments").insert({
+                                    "loan_id": d['id'], "amount": val, "payment_type": type_db,
+                                    "paid_at": str(dt), "owner_id": st.session_state.user.id,
+                                    "proof_url": proof_url
+                                }).execute()
+
+                                new_bal = saldo
+                                if mode == "Juros + Amortização": new_bal -= (val - juros)
+                                elif mode == "Quitação Total": new_bal = 0
+
+                                stt = 'pago' if new_bal <= 0.5 else 'pendente'
+                                supabase.table("loans").update({"remaining_amount": new_bal, "status": stt}).eq("id", d['id']).execute()
+
+                                st.balloons()
+                                st.success("Pagamento registrado!")
+                                st.rerun()
+                            except Exception as e: st.error(f"Erro: {e}")
         else: st.info("Nada pendente.")
 
     # --- 3. NOVO CONTRATO ---
@@ -398,8 +478,36 @@ else:
             for c in clients:
                 icon = "🟢" if c['reputation']=='BOM' else "🔴" if c['reputation']=='RUIM' else "⚪"
                 with st.expander(f"{icon} {c['name']} ({c['cpf']})"):
-                    st.write(f"📱 {c['phone']} | 📍 {c['address']}")
-                    
+                    hcol1, hcol2 = st.columns([5, 1])
+                    with hcol1:
+                        st.write(f"📱 {c['phone']} | 📍 {c['address']}")
+                    with hcol2:
+                        if st.button("✏️ Editar", key=f"editbtn_{c['id']}"):
+                            st.session_state.edit_client_id = None if st.session_state.get('edit_client_id') == c['id'] else c['id']
+                            st.rerun()
+
+                    if st.session_state.get('edit_client_id') == c['id']:
+                        with st.form(f"edit_cli_{c['id']}"):
+                            ec1, ec2 = st.columns(2)
+                            e_nm = ec1.text_input("Nome", value=c.get('name',''))
+                            e_tel = ec1.text_input("Celular", value=c.get('phone',''))
+                            e_ref = ec1.text_input("Referência", value=c.get('reference_contact',''))
+                            e_rg = ec2.text_input("RG", value=c.get('rg',''))
+                            e_em = ec2.text_input("Email", value=c.get('email',''))
+                            e_end = ec2.text_area("Endereço", value=c.get('address',''))
+                            if st.form_submit_button("💾 Salvar alterações", type="primary"):
+                                try:
+                                    supabase.table("clients").update({
+                                        "name": e_nm, "phone": re.sub(r'\D','',e_tel),
+                                        "rg": e_rg, "email": e_em,
+                                        "address": e_end, "reference_contact": e_ref
+                                    }).eq("id", c['id']).execute()
+                                    st.session_state.edit_client_id = None
+                                    st.success("✅ Cliente atualizado!")
+                                    st.rerun()
+                                except Exception as e: st.error(f"Erro: {e}")
+                        st.divider()
+
                     loans = supabase.table("loans").select("*").eq("client_id", c['id']).execute().data
                     if loans:
                         st.subheader("Contratos")
