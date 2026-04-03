@@ -53,6 +53,8 @@ def login(email, password):
         res = supabase.auth.sign_in_with_password({"email": email, "password": password})
         st.session_state.session = res.session
         st.session_state.user = res.user
+        # Set session BEFORE querying profiles so RLS uses the authenticated user
+        supabase.auth.set_session(res.session.access_token, res.session.refresh_token)
         try:
             d = supabase.table("profiles").select("role, name").eq("id", res.user.id).execute()
             st.session_state.role = d.data[0]['role'] if d.data else 'employee'
@@ -111,7 +113,8 @@ else:
     if st.session_state.user and not st.session_state.name:
         try:
             _d = supabase.table("profiles").select("name").eq("id", st.session_state.user.id).execute()
-            st.session_state.name = _d.data[0].get('name') if _d.data else None
+            fetched = _d.data[0].get('name') if _d.data else None
+            st.session_state.name = fetched if fetched else None
         except: pass
     display_name = st.session_state.name or (st.session_state.user.email if st.session_state.user else '')
     st.sidebar.title(f"Olá, {display_name}")
@@ -206,7 +209,11 @@ else:
                         theta=alt.Theta('Contratos:Q'),
                         color=alt.Color('status:N', scale=cor_scale, legend=alt.Legend(title='Status')),
                         tooltip=[alt.Tooltip('Status:N', title='Status'), alt.Tooltip('Contratos:Q', title='Contratos')]
-                    ).properties(title='Contratos por Status', height=240)
+                    ).properties(
+                        title=alt.TitleParams('Contratos por Status', anchor='middle', fontSize=14, dy=-5),
+                        height=260,
+                        padding={'top': 30}
+                    )
                     st.altair_chart(c_count, use_container_width=True)
                 with gc2:
                     c_saldo = alt.Chart(status_saldo).mark_bar(
@@ -216,7 +223,11 @@ else:
                         y=alt.Y('Saldo:Q', title='Saldo Devedor (R$)', axis=alt.Axis(format=',.0f')),
                         color=alt.Color('status:N', scale=cor_scale, legend=None),
                         tooltip=[alt.Tooltip('Status:N', title='Status'), alt.Tooltip('Saldo:Q', title='Saldo (R$)', format=',.2f')]
-                    ).properties(title='Saldo Devedor por Status', height=240)
+                    ).properties(
+                        title=alt.TitleParams('Saldo Devedor por Status', anchor='middle', fontSize=14),
+                        height=260,
+                        padding={'top': 30}
+                    )
                     st.altair_chart(c_saldo, use_container_width=True)
             else: st.warning("Sem dados para o filtro.")
         else: st.info("Sem empréstimos.")
