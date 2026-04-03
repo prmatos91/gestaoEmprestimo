@@ -49,10 +49,8 @@ def init_session():
             token = st.session_state.session.access_token
             refresh = st.session_state.session.refresh_token
             supabase.auth.set_session(token, refresh)
-            # Sobrescreve o anon key no options.headers, que é lido pela property
-            # supabase.postgrest a cada acesso. Sem isso, o anon key sempre vence
-            # e as queries RLS rodam sem autenticação.
-            supabase.options.headers["Authorization"] = f"Bearer {token}"
+            # auth() atualiza os headers da sessão httpx do client PostgREST já inicializado
+            supabase.postgrest.auth(token)
         except Exception:
             logout()
 
