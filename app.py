@@ -50,33 +50,13 @@ def init_session():
             supabase.postgrest.auth(st.session_state.session.access_token)
         except: logout()
 
-def fetch_profile(user_id, access_token):
-    """Busca role e name via REST direto, sem depender do estado interno do client supabase."""
-    try:
-        resp = requests.get(
-            f"{url}/rest/v1/profiles",
-            params={"select": "role,name", "id": f"eq.{user_id}"},
-            headers={
-                "apikey": key,
-                "Authorization": f"Bearer {access_token}",
-            },
-            timeout=10,
-        )
-        data = resp.json()
-        if isinstance(data, list) and data:
-            return data[0]
-    except Exception:
-        pass
-    return {}
-
-def login(email, password):
+def login(email, password, nome):
     try:
         res = supabase.auth.sign_in_with_password({"email": email, "password": password})
         st.session_state.session = res.session
         st.session_state.user = res.user
-        profile = fetch_profile(res.user.id, res.session.access_token)
-        st.session_state.role = profile.get('role', 'employee')
-        st.session_state.name = profile.get('name') or None
+        st.session_state.name = nome.strip() if nome and nome.strip() else None
+        st.session_state.role = 'employee'
     except Exception:
         st.error("Credenciais inválidas.")
         return
@@ -118,17 +98,18 @@ if not st.session_state.user:
     with c2:
         with st.form("login"):
             st.markdown("#### 🔐 Acesse sua conta")
+            nome = st.text_input("Seu Nome", placeholder="Como quer ser chamado")
             email = st.text_input("E-mail", placeholder="seu@email.com")
             password = st.text_input("Senha", type="password", placeholder="••••••••")
             st.write("")
             if st.form_submit_button("Entrar", use_container_width=True, type="primary"):
-                with st.spinner("Verificando credenciais..."):
-                    login(email, password)
+                if not nome.strip():
+                    st.error("Informe seu nome.")
+                else:
+                    with st.spinner("Verificando credenciais..."):
+                        login(email, password, nome)
 else:
     update_atrasados()
-    if st.session_state.user and not st.session_state.name:
-        profile = fetch_profile(st.session_state.user.id, st.session_state.session.access_token)
-        st.session_state.name = profile.get('name') or None
     display_name = st.session_state.name or (st.session_state.user.email if st.session_state.user else '')
     st.sidebar.title(f"Olá, {display_name}")
     menu = st.sidebar.radio("Menu", ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes", "Calculadora de Atraso"])
