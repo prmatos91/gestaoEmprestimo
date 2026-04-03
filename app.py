@@ -149,22 +149,23 @@ else:
             sel = st.selectbox("Selecione o Contrato", list(opts.keys()))
             d = opts[sel]
 
-            # Cálculos
-            juros = float(d['original_amount']) * (float(d['interest_rate'])/100)
+            # Cálculos (juros sobre saldo devedor atual)
             saldo = float(d['remaining_amount'])
+            juros = saldo * (float(d['interest_rate'])/100)
             total_quit = saldo + juros
 
             # Card Informativo
             st.info(f"""
             **Resumo do Contrato:**
             - 💰 Saldo Devedor (Principal): **R$ {saldo:,.2f}**
-            - 📈 Juros da Parcela: **R$ {juros:,.2f}**
+            - 📈 Juros da Parcela ({d['interest_rate']}%): **R$ {juros:,.2f}**
             - 🏁 Total para Quitação Hoje: **R$ {total_quit:,.2f}**
             """)
 
+            # Modo fora do form para atualizar val_sug em tempo real
+            mode = st.radio("Tipo de Pagamento", ["Somente Juros", "Juros + Amortização", "Quitação Total"], horizontal=True)
+
             with st.form("pay"):
-                mode = st.radio("Tipo de Pagamento", ["Somente Juros", "Juros + Amortização", "Quitação Total"], horizontal=True)
-                
                 # Definição de valor sugerido
                 val_sug = juros if mode == "Somente Juros" else (juros + 100) if mode == "Juros + Amortização" else total_quit
                 
@@ -228,6 +229,8 @@ else:
     # --- 3. NOVO CONTRATO ---
     elif menu == "Novo Contrato":
         st.title("💰 Novo Contrato")
+        if st.session_state.pop('loan_created', False):
+            st.success("✅ Contrato criado com sucesso!")
         try:
             r = supabase.table("clients").select("*").execute()
             # Ordena e cria Label Visual
@@ -273,11 +276,72 @@ else:
                             "client_id": cli['id'], "original_amount": val, "remaining_amount": val,
                             "interest_rate": rate, "due_date": str(due), "owner_id": st.session_state.user.id
                         }).execute()
-                        st.success("Criado!"); st.rerun()
+                        st.session_state['loan_created'] = True
+                        st.rerun()
 
     # --- 4. CADASTRAR CLIENTE ---
     elif menu == "Cadastrar Cliente":
         st.title("👤 Novo Cliente")
+
+        # --- IMPORTAÇÃO EM MASSA VIA CSV ---
+        with st.expander("📥 Importar clientes via CSV"):
+            st.markdown("""
+**Formato esperado do CSV** (em ordem, com cabeçalho):
+
+| nome | cpf | celular | endereco | referencia | rg | email |
+|------|-----|---------|----------|------------|-----|-------|
+
+- Colunas obrigatórias: `nome`, `cpf`, `celular`, `endereco`, `referencia`
+- Colunas opcionais: `rg`, `email`
+- CPF: apenas números ou formatado (000.000.000-00)
+- Celular: DDD + 9 dígitos (apenas números)
+            """)
+            csv_file = st.file_uploader("Selecione o arquivo CSV", type=["csv"], key="csv_import")
+            if csv_file:
+                try:
+                    df_csv = pd.read_csv(csv_file, dtype=str).fillna("")
+                    df_csv.columns = [c.strip().lower() for c in df_csv.columns]
+                    required_cols = {"nome", "cpf", "celular", "endereco", "referencia"}
+                    missing = required_cols - set(df_csv.columns)
+                    if missing:
+                        st.error(f"Colunas faltando no CSV: {', '.join(missing)}")
+                    else:
+                        st.dataframe(df_csv.head(5), use_container_width=True)
+                        st.caption(f"{len(df_csv)} clientes encontrados no arquivo.")
+                        if st.button("✅ Confirmar Importação", type="primary"):
+                            ok, erros = 0, []
+                            for _, row in df_csv.iterrows():
+                                cpf_clean = re.sub(r'\D', '', row['cpf'])
+                                phone_clean = re.sub(r'\D', '', row['celular'])
+                                if not validate_cpf(cpf_clean):
+                                    erros.append(f"{row['nome']}: CPF inválido ({row['cpf']})")
+                                    continue
+                                if not (len(phone_clean) == 11 and phone_clean[2] == '9'):
+                                    erros.append(f"{row['nome']}: Celular inválido ({row['celular']})")
+                                    continue
+                                try:
+                                    supabase.table("clients").insert({
+                                        "name": row['nome'].strip(),
+                                        "cpf": cpf_clean,
+                                        "phone": phone_clean,
+                                        "address": row['endereco'].strip(),
+                                        "reference_contact": row['referencia'].strip(),
+                                        "rg": row.get('rg', '').strip(),
+                                        "email": row.get('email', '').strip(),
+                                        "reputation": "NEUTRO",
+                                        "owner_id": st.session_state.user.id
+                                    }).execute()
+                                    ok += 1
+                                except Exception as e:
+                                    erros.append(f"{row['nome']}: {e}")
+                            if ok: st.success(f"✅ {ok} cliente(s) importado(s) com sucesso!")
+                            if erros:
+                                st.error(f"⚠️ {len(erros)} erro(s):")
+                                for e in erros: st.write(f"- {e}")
+                except Exception as e:
+                    st.error(f"Erro ao ler CSV: {e}")
+
+        st.divider()
         with st.form("cli"):
             c1, c2 = st.columns(2)
             nm = c1.text_input("Nome *")
@@ -342,22 +406,22 @@ else:
 
                         if st.button("Ver Histórico Pagamentos", key=c['id']):
                             ids = [l['id'] for l in loans]
-                            logs = supabase.table("payments").select("*, profiles(email)").in_("loan_id", ids).order("paid_at", desc=True).execute().data
+                            logs = supabase.table("payments").select("*, profiles!owner_id(email)").in_("loan_id", ids).order("paid_at", desc=True).execute().data
                             if logs:
                                 # Prepara dados para tabela
                                 data_logs = []
                                 for l in logs:
                                     dt_br = datetime.strptime(l['paid_at'], '%Y-%m-%d').strftime('%d/%m/%Y')
-                                    # Cria link se tiver comprovante
                                     comprovante = f"[Ver]({l['proof_url']})" if l.get('proof_url') else "-"
+                                    prof = l.get('profiles')
+                                    resp = prof['email'] if isinstance(prof, dict) else l.get('owner_id', '-')
                                     data_logs.append({
-                                        "Data": dt_br, 
-                                        "Valor": f"R$ {l['amount']}", 
-                                        "Tipo": l['payment_type'], 
-                                        "Resp": l['profiles']['email'],
+                                        "Data": dt_br,
+                                        "Valor": f"R$ {l['amount']:,.2f}",
+                                        "Tipo": l['payment_type'],
+                                        "Resp": resp,
                                         "Comp": comprovante
                                     })
-                                # Mostra tabela markdown para permitir links
                                 st.markdown(pd.DataFrame(data_logs).to_markdown(index=False))
                             else: st.info("Sem pagamentos.")
                     else: st.info("Sem histórico.")
