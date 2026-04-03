@@ -40,6 +40,7 @@ def init_session():
     if 'session' not in st.session_state: st.session_state.session = None
     if 'user' not in st.session_state: st.session_state.user = None
     if 'role' not in st.session_state: st.session_state.role = None
+    if 'name' not in st.session_state: st.session_state.name = None
     if st.session_state.session:
         try:
             supabase.auth.set_session(st.session_state.session.access_token, st.session_state.session.refresh_token)
@@ -51,15 +52,17 @@ def login(email, password):
         st.session_state.session = res.session
         st.session_state.user = res.user
         try:
-            d = supabase.table("profiles").select("role").eq("id", res.user.id).execute()
+            d = supabase.table("profiles").select("role, name").eq("id", res.user.id).execute()
             st.session_state.role = d.data[0]['role'] if d.data else 'employee'
+            st.session_state.name = d.data[0].get('name') if d.data else None
         except: st.session_state.role = 'employee'
         st.rerun()
     except: st.error("Credenciais inválidas.")
 
 def logout():
     supabase.auth.sign_out()
-    st.session_state.session = None; st.session_state.user = None; st.session_state.role = None
+    st.session_state.session = None; st.session_state.user = None
+    st.session_state.role = None; st.session_state.name = None
     st.rerun()
 
 # --- 3. UPLOAD ---
@@ -82,9 +85,9 @@ if not st.session_state.user:
             email = st.text_input("E-mail"); password = st.text_input("Senha", type="password")
             if st.form_submit_button("Entrar", use_container_width=True): login(email, password)
 else:
-    user_email = st.session_state.user.email if st.session_state.user else ''
-    st.sidebar.title(f"Olá, {user_email}")
-    menu = st.sidebar.radio("Menu", ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes"])
+    display_name = st.session_state.name or (st.session_state.user.email if st.session_state.user else '')
+    st.sidebar.title(f"Olá, {display_name}")
+    menu = st.sidebar.radio("Menu", ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes", "Calculadora de Atraso"])
     st.sidebar.divider()
     if st.sidebar.button("Sair"): logout()
 
@@ -429,3 +432,37 @@ else:
                                 st.markdown(pd.DataFrame(data_logs).to_markdown(index=False))
                             else: st.info("Sem pagamentos.")
                     else: st.info("Sem histórico.")
+
+    # --- 6. CALCULADORA DE ATRASO ---
+    elif menu == "Calculadora de Atraso":
+        st.title("🧮 Calculadora de Multa e Juros por Atraso")
+        st.caption("Use esta calculadora para saber o total a cobrar de um cliente em atraso.")
+
+        c1, c2 = st.columns(2)
+        saldo_calc = c1.number_input("💰 Saldo Devedor (R$)", min_value=0.0, step=50.0, format="%.2f")
+        multa = c1.number_input("⚠️ Multa Fixa (R$)", min_value=0.0, step=5.0, format="%.2f",
+                                help="Valor fixo de multa cobrado uma única vez pelo atraso")
+        juros_dia = c2.number_input("📅 Juros por Dia (R$)", min_value=0.0, step=1.0, format="%.2f",
+                                    help="Valor fixo cobrado por cada dia de atraso")
+        dias = c2.number_input("📆 Dias em Atraso", min_value=0, step=1,
+                               help="Quantos dias se passaram desde o vencimento")
+
+        if saldo_calc > 0 or multa > 0 or juros_dia > 0:
+            st.divider()
+            total_juros_atraso = juros_dia * dias
+            total_cobrar = saldo_calc + multa + total_juros_atraso
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Saldo Devedor", f"R$ {saldo_calc:,.2f}")
+            col2.metric("Multa", f"R$ {multa:,.2f}")
+            col3.metric(f"Juros ({dias} dias)", f"R$ {total_juros_atraso:,.2f}",
+                        delta=f"R$ {juros_dia:,.2f}/dia", delta_color="off")
+            col4.metric("💥 Total a Cobrar", f"R$ {total_cobrar:,.2f}")
+
+            st.info(f"""
+**Memória de cálculo:**
+- Saldo devedor: **R$ {saldo_calc:,.2f}**
+- Multa fixa: **R$ {multa:,.2f}**
+- Juros por atraso: R$ {juros_dia:,.2f}/dia × {dias} dias = **R$ {total_juros_atraso:,.2f}**
+- **Total: R$ {saldo_calc:,.2f} + R$ {multa:,.2f} + R$ {total_juros_atraso:,.2f} = R$ {total_cobrar:,.2f}**
+            """)
