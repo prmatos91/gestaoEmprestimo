@@ -46,9 +46,15 @@ def init_session():
     if 'edit_client_id' not in st.session_state: st.session_state.edit_client_id = None
     if st.session_state.session:
         try:
-            supabase.auth.set_session(st.session_state.session.access_token, st.session_state.session.refresh_token)
-            supabase.postgrest.auth(st.session_state.session.access_token)
-        except: logout()
+            token = st.session_state.session.access_token
+            refresh = st.session_state.session.refresh_token
+            supabase.auth.set_session(token, refresh)
+            # Sobrescreve o anon key no options.headers, que é lido pela property
+            # supabase.postgrest a cada acesso. Sem isso, o anon key sempre vence
+            # e as queries RLS rodam sem autenticação.
+            supabase.options.headers["Authorization"] = f"Bearer {token}"
+        except Exception:
+            logout()
 
 def login(email, password, nome):
     try:
