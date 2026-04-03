@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import re
 import altair as alt
+import requests
 
 # --- 1. CONFIGURAÇÃO INICIAL E VALIDADORES ---
 st.set_page_config(page_title="Gestão de Empréstimos", layout="wide", page_icon="🏦")
@@ -49,20 +50,33 @@ def init_session():
             supabase.postgrest.auth(st.session_state.session.access_token)
         except: logout()
 
+def fetch_profile(user_id, access_token):
+    """Busca role e name via REST direto, sem depender do estado interno do client supabase."""
+    try:
+        resp = requests.get(
+            f"{url}/rest/v1/profiles",
+            params={"select": "role,name", "id": f"eq.{user_id}"},
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {access_token}",
+            },
+            timeout=10,
+        )
+        data = resp.json()
+        if isinstance(data, list) and data:
+            return data[0]
+    except Exception:
+        pass
+    return {}
+
 def login(email, password):
     try:
         res = supabase.auth.sign_in_with_password({"email": email, "password": password})
         st.session_state.session = res.session
         st.session_state.user = res.user
-        # Set session BEFORE querying profiles so RLS uses the authenticated user
-        supabase.auth.set_session(res.session.access_token, res.session.refresh_token)
-        supabase.postgrest.auth(res.session.access_token)
-        try:
-            d = supabase.table("profiles").select("role, name").eq("id", res.user.id).execute()
-            st.session_state.role = d.data[0]['role'] if d.data else 'employee'
-            st.session_state.name = d.data[0].get('name') if d.data else None
-        except:
-            st.session_state.role = 'employee'
+        profile = fetch_profile(res.user.id, res.session.access_token)
+        st.session_state.role = profile.get('role', 'employee')
+        st.session_state.name = profile.get('name') or None
     except Exception:
         st.error("Credenciais inválidas.")
         return
@@ -113,11 +127,8 @@ if not st.session_state.user:
 else:
     update_atrasados()
     if st.session_state.user and not st.session_state.name:
-        try:
-            _d = supabase.table("profiles").select("name").eq("id", st.session_state.user.id).execute()
-            fetched = _d.data[0].get('name') if _d.data else None
-            st.session_state.name = fetched if fetched else None
-        except: pass
+        profile = fetch_profile(st.session_state.user.id, st.session_state.session.access_token)
+        st.session_state.name = profile.get('name') or None
     display_name = st.session_state.name or (st.session_state.user.email if st.session_state.user else '')
     st.sidebar.title(f"Olá, {display_name}")
     menu = st.sidebar.radio("Menu", ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes", "Calculadora de Atraso"])
