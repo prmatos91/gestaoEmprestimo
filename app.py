@@ -409,7 +409,11 @@ else:
                 with st.form("new_loan"):
                     c1, c2, c3 = st.columns(3)
                     val = c1.number_input("Valor (R$)", min_value=50.0, step=50.0)
-                    rate = c2.number_input("Juros (%)", value=10.0, step=0.5)
+                    if is_admin():
+                        rate = c2.number_input("Juros (%)", value=10.0, step=0.5)
+                    else:
+                        rate = 30.0
+                        c2.metric("Juros (%)", "30%")
                     due = c3.date_input("1º Vencimento", date.today(), format="DD/MM/YYYY")
                     
                     if st.form_submit_button("Gerar Contrato", type="primary"):
@@ -526,7 +530,7 @@ else:
     # --- 5. BASE DE CLIENTES ---
     elif menu == "Base de Clientes":
         st.title("📂 Carteira")
-        is_admin = st.session_state.role == 'admin'
+        _admin = is_admin()
         search = st.text_input("Buscar (Nome/CPF)")
         q = apply_owner_filter(supabase.table("clients").select("*"))
         if search: q = q.or_(f"name.ilike.%{search}%,cpf.ilike.%{search}%")
@@ -537,15 +541,15 @@ else:
             for c in clients:
                 icon = "🟢" if c['reputation']=='BOM' else "🔴" if c['reputation']=='RUIM' else "⚪"
                 with st.expander(f"{icon} {c['name']} ({c['cpf']})"):
-                    hcols = st.columns([4, 1, 1]) if is_admin else st.columns([5, 1])
+                    hcols = st.columns([4, 1, 1]) if _admin else st.columns([5, 1])
                     hcols[0].write(f"📱 {c['phone']} | 📍 {c['address']}")
                     if hcols[1].button("✏️ Editar", key=f"editbtn_{c['id']}"):
                         st.session_state.edit_client_id = None if st.session_state.get('edit_client_id') == c['id'] else c['id']
                         st.rerun()
-                    if is_admin and hcols[2].button("🗑️ Excluir", key=f"delbtn_{c['id']}", type="secondary"):
+                    if _admin and hcols[2].button("🗑️ Excluir", key=f"delbtn_{c['id']}", type="secondary"):
                         st.session_state[f'confirm_del_{c["id"]}'] = True
 
-                    if is_admin and st.session_state.get(f'confirm_del_{c["id"]}'):
+                    if _admin and st.session_state.get(f'confirm_del_{c["id"]}'):
                         st.warning("⚠️ Tem certeza que deseja excluir este cliente? Esta ação não pode ser desfeita.")
                         cc1, cc2 = st.columns(2)
                         if cc1.button("✅ Sim, excluir", key=f"yes_del_{c['id']}", type="primary"):
@@ -597,7 +601,7 @@ else:
                                 dc1.write(f"📄 {doc.get('file_name') or 'Documento'}")
                                 if doc.get('file_url'):
                                     dc2.markdown(f"[🔗 Abrir]({doc['file_url']})")
-                                if is_admin and dc3.button("🗑️", key=f"del_doc_{doc['id']}", help="Excluir documento"):
+                                if _admin and dc3.button("🗑️", key=f"del_doc_{doc['id']}", help="Excluir documento"):
                                     supabase.table("client_documents").delete().eq("id", doc['id']).execute()
                                     st.rerun()
                         else:
@@ -625,7 +629,7 @@ else:
                                 'original_amount': 'Valor', 'remaining_amount': 'Saldo', 'interest_rate': 'Juros (%)', 'status': 'Status'
                             })
                             st.dataframe(df_l, use_container_width=True)
-                            if is_admin:
+                            if _admin:
                                 st.markdown("**✏️ Editar juros de um contrato:**")
                                 loan_opts = {f"Vence {l['due_date']} | Saldo R$ {float(l['remaining_amount']):.2f}": l for l in loans}
                                 sel_loan_lbl = st.selectbox("Selecione o contrato", list(loan_opts.keys()), key=f"sel_loan_{c['id']}")
