@@ -138,6 +138,7 @@ else:
     update_atrasados()
     display_name = st.session_state.name or (st.session_state.user.email if st.session_state.user else '')
     st.sidebar.title(f"Olá, {display_name}")
+    st.sidebar.caption(f"Perfil: `{st.session_state.role}`")
     _menu_items = ["Painel Financeiro", "Baixa de Pagamentos", "Novo Contrato", "Cadastrar Cliente", "Base de Clientes", "Calculadora de Atraso"]
     if st.session_state.role == 'admin':
         _menu_items.append("Gerenciar Usuários")
