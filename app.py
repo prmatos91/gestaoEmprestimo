@@ -31,12 +31,12 @@ def validate_cpf(cpf):
 # --- Conexão Supabase ---
 try:
     url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    service_key = st.secrets.get("SUPABASE_SERVICE_KEY", key)
-    # supabase_auth: apenas para login/logout (anon key)
+    service_key = st.secrets["SUPABASE_SERVICE_KEY"]
+    # anon key é opcional — se não existir usa service_role em ambos os clients
+    key = st.secrets.get("SUPABASE_KEY", service_key)
+    # supabase_auth: apenas para login/logout
     supabase_auth: Client = create_client(url, key)
-    # supabase: para todas as queries de dados (service_role bypassa RLS)
-    # O controle de acesso é feito via session_state.role no Python
+    # supabase: todas as queries de dados (service_role bypassa RLS)
     supabase: Client = create_client(url, service_key)
 except:
     st.error("Erro: Configure .streamlit/secrets.toml")
