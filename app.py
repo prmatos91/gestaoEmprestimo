@@ -103,6 +103,19 @@ def update_atrasados():
         supabase.table("loans").update({"status": "atrasado"}).eq("status", "pendente").lt("due_date", str(date.today())).execute()
     except: pass
 
+def is_admin():
+    return st.session_state.get('role') == 'admin'
+
+def owner_id():
+    """Retorna o owner_id do usuário logado."""
+    return st.session_state.user.id if st.session_state.user else None
+
+def apply_owner_filter(q):
+    """Aplica filtro owner_id se o usuário for funcionário."""
+    if not is_admin():
+        q = q.eq("owner_id", owner_id())
+    return q
+
 # --- 5. APP PRINCIPAL ---
 init_session()
 
@@ -146,7 +159,8 @@ else:
 
         # Alertas de vencimento
         with st.spinner("Carregando dados..."):
-            alertas_raw = supabase.table("loans").select("*, clients(name)").neq("status", "pago").execute().data
+            q_alertas = supabase.table("loans").select("*, clients(name)").neq("status", "pago")
+            alertas_raw = apply_owner_filter(q_alertas).execute().data
         hoje = date.today()
         atrasados_lst = [l for l in alertas_raw if l['status'] == 'atrasado']
         vencem_hoje_lst = [l for l in alertas_raw if l['status'] == 'pendente' and datetime.strptime(l['due_date'], '%Y-%m-%d').date() == hoje]
@@ -177,11 +191,11 @@ else:
         with st.expander("🔍 Filtros", expanded=True):
             c1, c2 = st.columns(2)
             dr = c1.date_input("Período (Vencimento)", (date(date.today().year, 1, 1), date.today()), format="DD/MM/YYYY")
-            clients = supabase.table("clients").select("id, name").execute().data
+            clients = apply_owner_filter(supabase.table("clients").select("id, name")).execute().data
             cli_opts = {c['name']:c['id'] for c in clients} if clients else {}
             sel_cli = c2.multiselect("Clientes", list(cli_opts.keys()))
 
-        data = supabase.table("loans").select("*").execute().data
+        data = apply_owner_filter(supabase.table("loans").select("*")).execute().data
         if data:
             df = pd.DataFrame(data)
             df['due_date_dt'] = pd.to_datetime(df['due_date']).dt.date
@@ -257,11 +271,11 @@ else:
         
         target_ids = []
         if search:
-            r = supabase.table("clients").select("id").or_(f"name.ilike.%{search}%,cpf.ilike.%{search}%").execute()
+            r = apply_owner_filter(supabase.table("clients").select("id").or_(f"name.ilike.%{search}%,cpf.ilike.%{search}%")).execute()
             target_ids = [x['id'] for x in r.data]
             if not target_ids: st.warning("Não encontrado."); st.stop()
 
-        q = supabase.table("loans").select("*, clients(name, cpf)").neq("status", "pago")
+        q = apply_owner_filter(supabase.table("loans").select("*, clients(name, cpf)").neq("status", "pago"))
         if target_ids: q = q.in_("client_id", target_ids)
         with st.spinner("Carregando contratos..."):
             loans = q.execute().data
@@ -359,7 +373,7 @@ else:
         if st.session_state.pop('loan_created', False):
             st.success("✅ Contrato criado com sucesso!")
         try:
-            r = supabase.table("clients").select("*").execute()
+            r = apply_owner_filter(supabase.table("clients").select("*")).execute()
             # Ordena e cria Label Visual
             cli_data = sorted(r.data, key=lambda x: x['name'])
             # Dicionário reverso para buscar objeto completo pelo Label
@@ -514,7 +528,7 @@ else:
         st.title("📂 Carteira")
         is_admin = st.session_state.role == 'admin'
         search = st.text_input("Buscar (Nome/CPF)")
-        q = supabase.table("clients").select("*")
+        q = apply_owner_filter(supabase.table("clients").select("*"))
         if search: q = q.or_(f"name.ilike.%{search}%,cpf.ilike.%{search}%")
         with st.spinner("Carregando clientes..."):
             clients = q.execute().data
