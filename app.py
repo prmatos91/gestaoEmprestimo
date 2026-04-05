@@ -720,14 +720,15 @@ else:
                     for er in errs: st.error(er)
                     if not errs:
                         try:
-                            temp = create_client(url, key)
-                            res_new = temp.auth.sign_up({"email": n_email, "password": n_pass})
+                            # admin.create_user cria sem enviar email de confirmação
+                            res_new = supabase.auth.admin.create_user({
+                                "email": n_email,
+                                "password": n_pass,
+                                "email_confirm": True,
+                            })
                             if res_new.user:
-                                try:
-                                    supabase.table("profiles").update({"name": n_name, "role": "employee"}).eq("id", res_new.user.id).execute()
-                                except: pass
-                                st.success(f"✅ Funcionário **{n_name}** cadastrado com e-mail `{n_email}`. Informe a senha `{n_pass}` para o acesso inicial.")
-                                st.info("ℹ️ Se o Supabase exigir confirmação de e-mail, o funcionário precisa confirmar antes de logar. Você pode desativar isso em Authentication → Settings no painel Supabase.")
+                                supabase.table("profiles").update({"name": n_name, "role": "employee"}).eq("id", res_new.user.id).execute()
+                                st.success(f"✅ Funcionário **{n_name}** criado! E-mail: `{n_email}` | Senha: `{n_pass}`")
                             else:
                                 st.error("Não foi possível criar o usuário. O e-mail já pode estar cadastrado.")
                         except Exception as e:
@@ -744,7 +745,12 @@ else:
                     elif len(new_p) < 6: st.error("Senha deve ter ao menos 6 caracteres.")
                     else:
                         try:
-                            supabase.auth.update_user({"password": new_p})
+                            # Usa supabase_auth com a sessão do usuário logado
+                            supabase_auth.auth.set_session(
+                                st.session_state.session.access_token,
+                                st.session_state.session.refresh_token
+                            )
+                            supabase_auth.auth.update_user({"password": new_p})
                             st.success("✅ Senha alterada com sucesso!")
                         except Exception as e:
                             st.error(f"Erro: {e}")
@@ -752,13 +758,33 @@ else:
         with tab_lista:
             st.subheader("Usuários cadastrados")
             try:
-                profs = supabase.table("profiles").select("name, email, role").execute().data
+                profs = supabase.table("profiles").select("id, name, email, role").execute().data
                 if profs:
-                    df_pr = pd.DataFrame(profs)
-                    df_pr.columns = ['Nome', 'E-mail', 'Função']
-                    df_pr['Função'] = df_pr['Função'].map({'admin': '👑 Admin', 'employee': '👤 Funcionário'}).fillna('—')
-                    st.dataframe(df_pr, use_container_width=True, hide_index=True)
+                    for p in profs:
+                        role_icon = "👑 Admin" if p['role'] == 'admin' else "👤 Funcionário"
+                        is_self = p['id'] == st.session_state.user.id
+                        pc1, pc2, pc3 = st.columns([3, 2, 1])
+                        pc1.write(f"**{p.get('name') or '—'}** | {p['email']}")
+                        pc2.write(role_icon)
+                        if not is_self:
+                            if pc3.button("🗑️", key=f"del_user_{p['id']}", help="Excluir funcionário"):
+                                st.session_state[f'confirm_del_user_{p["id"]}'] = True
+                        else:
+                            pc3.caption("(você)")
+                        if st.session_state.get(f'confirm_del_user_{p["id"]}'):
+                            st.warning(f"⚠️ Excluir **{p.get('name') or p['email']}**? Esta ação não pode ser desfeita.")
+                            uc1, uc2 = st.columns(2)
+                            if uc1.button("✅ Confirmar exclusão", key=f"yes_del_user_{p['id']}", type="primary"):
+                                try:
+                                    supabase.auth.admin.delete_user(p['id'])
+                                    st.session_state.pop(f'confirm_del_user_{p["id"]}', None)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro: {e}")
+                            if uc2.button("❌ Cancelar", key=f"cancel_del_user_{p['id']}"):
+                                st.session_state.pop(f'confirm_del_user_{p["id"]}', None)
+                                st.rerun()
                 else:
                     st.info("Nenhum usuário encontrado.")
             except Exception as e:
-                st.info("Sem permissão para listar usuários ou nenhum encontrado.")
+                st.error(f"Erro ao listar usuários: {e}")
