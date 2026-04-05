@@ -1,0 +1,22 @@
+name: Keep Streamlit Alive
+
+on:
+  schedule:
+    # Executa a cada 25 minutos (24h/dia, 7 dias/semana)
+    - cron: '*/25 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: |
+          echo "Fazendo ping em https://gestaoemprestimo.streamlit.app/ ..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 https://gestaoemprestimo.streamlit.app/)
+          echo "HTTP Status: $STATUS"
+          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ]; then
+            echo "✅ App respondendo normalmente."
+          else
+            echo "⚠️ App retornou status $STATUS — pode estar acordando."
+          fi
