@@ -32,7 +32,12 @@ def validate_cpf(cpf):
 try:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
+    service_key = st.secrets.get("SUPABASE_SERVICE_KEY", key)
+    # supabase_auth: apenas para login/logout (anon key)
+    supabase_auth: Client = create_client(url, key)
+    # supabase: para todas as queries de dados (service_role bypassa RLS)
+    # O controle de acesso é feito via session_state.role no Python
+    supabase: Client = create_client(url, service_key)
 except:
     st.error("Erro: Configure .streamlit/secrets.toml")
     st.stop()
@@ -46,17 +51,16 @@ def init_session():
     if 'edit_client_id' not in st.session_state: st.session_state.edit_client_id = None
     if st.session_state.session:
         try:
-            token = st.session_state.session.access_token
-            refresh = st.session_state.session.refresh_token
-            supabase.auth.set_session(token, refresh)
-            # auth() atualiza os headers da sessão httpx do client PostgREST já inicializado
-            supabase.postgrest.auth(token)
+            supabase_auth.auth.set_session(
+                st.session_state.session.access_token,
+                st.session_state.session.refresh_token
+            )
         except Exception:
             logout()
 
 def login(email, password, nome):
     try:
-        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        res = supabase_auth.auth.sign_in_with_password({"email": email, "password": password})
         st.session_state.session = res.session
         st.session_state.user = res.user
         st.session_state.name = nome.strip() if nome and nome.strip() else None
@@ -67,7 +71,7 @@ def login(email, password, nome):
     st.rerun()
 
 def logout():
-    supabase.auth.sign_out()
+    supabase_auth.auth.sign_out()
     st.session_state.session = None; st.session_state.user = None
     st.session_state.role = None; st.session_state.name = None
     st.rerun()
@@ -725,7 +729,7 @@ else:
                             res_new = temp.auth.sign_up({"email": n_email, "password": n_pass})
                             if res_new.user:
                                 try:
-                                    supabase.table("profiles").update({"name": n_name}).eq("id", res_new.user.id).execute()
+                                    supabase.table("profiles").update({"name": n_name, "role": "employee"}).eq("id", res_new.user.id).execute()
                                 except: pass
                                 st.success(f"✅ Funcionário **{n_name}** cadastrado com e-mail `{n_email}`. Informe a senha `{n_pass}` para o acesso inicial.")
                                 st.info("ℹ️ Se o Supabase exigir confirmação de e-mail, o funcionário precisa confirmar antes de logar. Você pode desativar isso em Authentication → Settings no painel Supabase.")
