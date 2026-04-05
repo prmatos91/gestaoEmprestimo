@@ -208,12 +208,29 @@ else:
                 # KPIs
                 tot_orig = df['original_amount'].sum()
                 tot_dev = df['remaining_amount'].sum()
-                juros_prev = (df['original_amount'] * (df['interest_rate']/100)).sum()
-                
-                k1, k2, k3 = st.columns(3)
-                k1.metric("Total Emprestado", f"R$ {tot_orig:,.2f}")
-                k2.metric("Saldo a Receber", f"R$ {tot_dev:,.2f}")
-                k3.metric("Lucro Juros Previsto", f"R$ {juros_prev:,.2f}")
+
+                if is_admin():
+                    profiles_data = supabase.table("profiles").select("id, role").execute().data
+                    owner_roles = {p['id']: p['role'] for p in profiles_data}
+                    df['_owner_role'] = df['owner_id'].map(owner_roles).fillna('admin')
+                    df['_commission'] = df.apply(
+                        lambda r: r['original_amount'] * 0.10 if r['_owner_role'] == 'employee' else 0.0, axis=1
+                    )
+                    df['_admin_profit'] = df['original_amount'] * df['interest_rate'] / 100 - df['_commission']
+                    tot_admin_profit = df['_admin_profit'].sum()
+                    tot_commission = df['_commission'].sum()
+
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("Total Emprestado", f"R$ {tot_orig:,.2f}")
+                    k2.metric("Saldo a Receber", f"R$ {tot_dev:,.2f}")
+                    k3.metric("Lucro Previsto (Admin)", f"R$ {tot_admin_profit:,.2f}")
+                    k4.metric("Comissões Funcionários", f"R$ {tot_commission:,.2f}")
+                else:
+                    tot_commission_emp = (df['original_amount'] * 0.10).sum()
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("Total Emprestado", f"R$ {tot_orig:,.2f}")
+                    k2.metric("Saldo a Receber", f"R$ {tot_dev:,.2f}")
+                    k3.metric("Minha Comissão (10%)", f"R$ {tot_commission_emp:,.2f}")
                 
                 # Tabela Formatada
                 st.divider()
@@ -267,6 +284,9 @@ else:
     # --- 2. BAIXA DE PAGAMENTOS (AJUSTADA) ---
     elif menu == "Baixa de Pagamentos":
         st.title("💸 Registrar Pagamento")
+        if st.session_state.pop('payment_done', False):
+            st.success("✅ Pagamento registrado com sucesso!")
+            st.balloons()
         search = st.text_input("Buscar (Nome/CPF)")
         
         target_ids = []
@@ -338,33 +358,33 @@ else:
 
                         if err: st.error(err)
                         else:
-                            try:
-                                proof_url = None
-                                if proof:
-                                    proof_url, _ = upload_file(proof, f"proofs/{d['id']}")
+                            with st.spinner("Processando pagamento..."):
+                                try:
+                                    proof_url = None
+                                    if proof:
+                                        proof_url, _ = upload_file(proof, f"proofs/{d['id']}")
 
-                                due_dt = datetime.strptime(d['due_date'], '%Y-%m-%d').date()
-                                rep = 'BOM' if dt <= due_dt else 'RUIM'
-                                supabase.table("clients").update({"reputation": rep}).eq("id", d['client_id']).execute()
+                                    due_dt = datetime.strptime(d['due_date'], '%Y-%m-%d').date()
+                                    rep = 'BOM' if dt <= due_dt else 'RUIM'
+                                    supabase.table("clients").update({"reputation": rep}).eq("id", d['client_id']).execute()
 
-                                type_db = "JUROS" if mode == "Somente Juros" else "AMORTIZACAO" if mode == "Juros + Amortização" else "QUITACAO"
-                                supabase.table("payments").insert({
-                                    "loan_id": d['id'], "amount": val, "payment_type": type_db,
-                                    "paid_at": str(dt), "owner_id": st.session_state.user.id,
-                                    "proof_url": proof_url
-                                }).execute()
+                                    type_db = "JUROS" if mode == "Somente Juros" else "AMORTIZACAO" if mode == "Juros + Amortização" else "QUITACAO"
+                                    supabase.table("payments").insert({
+                                        "loan_id": d['id'], "amount": val, "payment_type": type_db,
+                                        "paid_at": str(dt), "owner_id": st.session_state.user.id,
+                                        "proof_url": proof_url
+                                    }).execute()
 
-                                new_bal = saldo
-                                if mode == "Juros + Amortização": new_bal -= (val - juros)
-                                elif mode == "Quitação Total": new_bal = 0
+                                    new_bal = saldo
+                                    if mode == "Juros + Amortização": new_bal -= (val - juros)
+                                    elif mode == "Quitação Total": new_bal = 0
 
-                                stt = 'pago' if new_bal <= 0.5 else 'pendente'
-                                supabase.table("loans").update({"remaining_amount": new_bal, "status": stt}).eq("id", d['id']).execute()
+                                    stt = 'pago' if new_bal <= 0.5 else 'pendente'
+                                    supabase.table("loans").update({"remaining_amount": new_bal, "status": stt}).eq("id", d['id']).execute()
 
-                                st.balloons()
-                                st.success("Pagamento registrado!")
-                                st.rerun()
-                            except Exception as e: st.error(f"Erro: {e}")
+                                    st.session_state['payment_done'] = True
+                                    st.rerun()
+                                except Exception as e: st.error(f"Erro: {e}")
         else: st.info("Nada pendente.")
 
     # --- 3. NOVO CONTRATO ---
@@ -417,10 +437,11 @@ else:
                     due = c3.date_input("1º Vencimento", date.today(), format="DD/MM/YYYY")
                     
                     if st.form_submit_button("Gerar Contrato", type="primary"):
-                        supabase.table("loans").insert({
-                            "client_id": cli['id'], "original_amount": val, "remaining_amount": val,
-                            "interest_rate": rate, "due_date": str(due), "owner_id": st.session_state.user.id
-                        }).execute()
+                        with st.spinner("Criando contrato..."):
+                            supabase.table("loans").insert({
+                                "client_id": cli['id'], "original_amount": val, "remaining_amount": val,
+                                "interest_rate": rate, "due_date": str(due), "owner_id": st.session_state.user.id
+                            }).execute()
                         st.session_state['loan_created'] = True
                         st.rerun()
 
