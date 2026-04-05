@@ -64,7 +64,7 @@ def login(email, password, nome):
         st.session_state.session = res.session
         st.session_state.user = res.user
         st.session_state.name = nome.strip() if nome and nome.strip() else None
-        st.session_state.role = fetch_role(res.user.id, res.session.access_token)
+        st.session_state.role = fetch_role(res.user.id)
     except Exception:
         st.error("Credenciais inválidas.")
         return
@@ -87,18 +87,12 @@ def upload_file(file, folder="docs"):
         return pub_url, file.name
     except: return None, None
 
-def fetch_role(user_id, access_token):
-    """Busca role via REST direto com Bearer token — independente do estado interno do client."""
+def fetch_role(user_id):
+    """Busca role usando o client service_role (bypassa RLS)."""
     try:
-        resp = requests.get(
-            f"{url}/rest/v1/profiles",
-            params={"select": "role", "id": f"eq.{user_id}"},
-            headers={"apikey": key, "Authorization": f"Bearer {access_token}"},
-            timeout=10,
-        )
-        data = resp.json()
-        if isinstance(data, list) and data:
-            return data[0].get('role', 'employee')
+        d = supabase.table("profiles").select("role").eq("id", user_id).execute()
+        if d.data:
+            return d.data[0].get('role', 'employee')
     except:
         pass
     return 'employee'
