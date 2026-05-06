@@ -3,6 +3,8 @@ from supabase import create_client, Client
 import pandas as pd
 from datetime import datetime, date, timedelta
 import re
+import uuid
+import calendar
 import altair as alt
 import requests
 
@@ -27,6 +29,47 @@ def validate_cpf(cpf):
     sum_ = sum(int(cpf[i]) * (11 - i) for i in range(10))
     d2 = (sum_ * 10 % 11); d2 = 0 if d2 == 10 else d2
     return d2 == int(cpf[10])
+
+def _mask_cpf():
+    v = re.sub(r'\D', '', st.session_state.get('_cad_cpf', ''))
+    if len(v) >= 9:
+        st.session_state['_cad_cpf'] = f"{v[:3]}.{v[3:6]}.{v[6:9]}-{v[9:11]}"
+    elif len(v) > 6:
+        st.session_state['_cad_cpf'] = f"{v[:3]}.{v[3:6]}.{v[6:]}"
+    elif len(v) > 3:
+        st.session_state['_cad_cpf'] = f"{v[:3]}.{v[3:]}"
+
+def _mask_phone():
+    v = re.sub(r'\D', '', st.session_state.get('_cad_tel', ''))
+    if len(v) >= 7:
+        st.session_state['_cad_tel'] = f"({v[:2]}) {v[2:7]}-{v[7:11]}"
+    elif len(v) > 2:
+        st.session_state['_cad_tel'] = f"({v[:2]}) {v[2:]}"
+
+def _mask_rg():
+    v = re.sub(r'\D', '', st.session_state.get('_cad_rg', ''))
+    if len(v) >= 8:
+        st.session_state['_cad_rg'] = f"{v[:2]}.{v[2:5]}.{v[5:8]}-{v[8:9]}"
+    elif len(v) > 5:
+        st.session_state['_cad_rg'] = f"{v[:2]}.{v[2:5]}.{v[5:]}"
+    elif len(v) > 2:
+        st.session_state['_cad_rg'] = f"{v[:2]}.{v[2:]}"
+
+def brl(v):
+    """Formata valor numérico para moeda brasileira: R$ 1.234,56"""
+    return "R$ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def next_due_date(anchor_day, current_due):
+    """Retorna a data de vencimento do próximo mês.
+    Sempre usa anchor_day como dia de referência, respeitando o
+    último dia do mês alvo (ex: âncora 30 em fev → 28/29, em mar → 30)."""
+    next_month = current_due.month + 1
+    next_year  = current_due.year
+    if next_month > 12:
+        next_month = 1
+        next_year += 1
+    last_day = calendar.monthrange(next_year, next_month)[1]
+    return date(next_year, next_month, min(anchor_day, last_day))
 
 # --- Conexão Supabase ---
 try:
@@ -79,13 +122,13 @@ def logout():
 # --- 3. UPLOAD ---
 def upload_file(file, folder="docs"):
     try:
-        name = f"{folder}/{datetime.now().timestamp()}_{file.name.replace(' ', '_')}"
+        name = f"{folder}/{uuid.uuid4()}_{file.name.replace(' ', '_')}"
         supabase.storage.from_("documents").upload(name, file.getvalue(), {"content-type": file.type})
         pub_url = supabase.storage.from_("documents").get_public_url(name)
         if isinstance(pub_url, dict):
             pub_url = pub_url.get('publicUrl') or pub_url.get('publicURL', '')
-        return pub_url, file.name
-    except: return None, None
+        return pub_url, file.name, None
+    except Exception as e: return None, None, str(e)
 
 def fetch_role(user_id):
     """Busca role usando o client service_role (bypassa RLS)."""
@@ -221,16 +264,16 @@ else:
                     tot_commission = df['_commission'].sum()
 
                     k1, k2, k3, k4 = st.columns(4)
-                    k1.metric("Total Emprestado", f"R$ {tot_orig:,.2f}")
-                    k2.metric("Saldo a Receber", f"R$ {tot_dev:,.2f}")
-                    k3.metric("Lucro Previsto (Admin)", f"R$ {tot_admin_profit:,.2f}")
-                    k4.metric("Comissões Funcionários", f"R$ {tot_commission:,.2f}")
+                    k1.metric("Total Emprestado", brl(tot_orig))
+                    k2.metric("Saldo a Receber", brl(tot_dev))
+                    k3.metric("Lucro Previsto (Admin)", brl(tot_admin_profit))
+                    k4.metric("Comissões Funcionários", brl(tot_commission))
                 else:
                     tot_commission_emp = (df['original_amount'] * 0.10).sum()
                     k1, k2, k3 = st.columns(3)
-                    k1.metric("Total Emprestado", f"R$ {tot_orig:,.2f}")
-                    k2.metric("Saldo a Receber", f"R$ {tot_dev:,.2f}")
-                    k3.metric("Minha Comissão (10%)", f"R$ {tot_commission_emp:,.2f}")
+                    k1.metric("Total Emprestado", brl(tot_orig))
+                    k2.metric("Saldo a Receber", brl(tot_dev))
+                    k3.metric("Minha Comissão (10%)", brl(tot_commission_emp))
                 
                 # Tabela Formatada
                 st.divider()
@@ -240,7 +283,7 @@ else:
                 grid.columns = ['Vencimento', 'Valor Original', 'Saldo Devedor', 'Status']
                 
                 def color(v): return f"background-color: {'#d4edda' if v=='pago' else '#f8d7da' if v=='atrasado' else '#fff3cd'}; color: black"
-                st.dataframe(grid.style.map(color, subset=['Status']).format({'Valor Original': 'R$ {:.2f}', 'Saldo Devedor': 'R$ {:.2f}'}), use_container_width=True)
+                st.dataframe(grid.style.map(color, subset=['Status']).format({'Valor Original': brl, 'Saldo Devedor': brl}), use_container_width=True)
 
                 # Gráficos de distribuição
                 st.divider()
@@ -320,9 +363,9 @@ else:
             # Card Informativo
             st.info(f"""
             **Resumo do Contrato:**
-            - 💰 Saldo Devedor (Principal): **R\\$ {saldo:,.2f}**
-            - 📈 Juros da Parcela ({d['interest_rate']}% sobre R\\$ {float(d['original_amount']):,.2f}): **R\\$ {juros:,.2f}**
-            - 🏁 Total para Quitação Hoje: **R\\$ {total_quit:,.2f}**
+            - 💰 Saldo Devedor (Principal): **{brl(saldo)}**
+            - 📈 Juros da Parcela ({d['interest_rate']}% sobre {brl(float(d['original_amount']))}): **{brl(juros)}**
+            - 🏁 Total para Quitação Hoje: **{brl(total_quit)}**
             """)
 
             # Modo fora do form para atualizar val_sug em tempo real
@@ -341,7 +384,7 @@ else:
 
                 confirm_quit = True
                 if mode == "Quitação Total":
-                    confirm_quit = st.checkbox(f"✅ Confirmo a quitação total de **R$ {total_quit:,.2f}**. Esta ação não pode ser desfeita.")
+                    confirm_quit = st.checkbox(f"✅ Confirmo a quitação total de **{brl(total_quit)}**. Esta ação não pode ser desfeita.")
 
                 if st.form_submit_button("Confirmar Baixa", type="primary"):
                     if mode == "Quitação Total" and not confirm_quit:
@@ -349,12 +392,12 @@ else:
                     else:
                         err = None
                         if mode == "Somente Juros":
-                            if val < (juros - 0.1): err = f"Valor insuficiente. Mínimo para juros: R$ {juros:,.2f}"
+                            if val < (juros - 0.1): err = f"Valor insuficiente. Mínimo para juros: {brl(juros)}"
                         elif mode == "Juros + Amortização":
                             if val <= juros:
-                                err = f"O valor (R$ {val:.2f}) não cobre os juros. Para amortizar, precisa ser MAIOR que R$ {juros:,.2f}."
+                                err = f"O valor ({brl(val)}) não cobre os juros. Para amortizar, precisa ser MAIOR que {brl(juros)}."
                         elif mode == "Quitação Total":
-                            if val < (total_quit - 1.0): err = f"Para quitar, o valor deve ser R$ {total_quit:,.2f}"
+                            if val < (total_quit - 1.0): err = f"Para quitar, o valor deve ser {brl(total_quit)}"
 
                         if err: st.error(err)
                         else:
@@ -362,7 +405,7 @@ else:
                                 try:
                                     proof_url = None
                                     if proof:
-                                        proof_url, _ = upload_file(proof, f"proofs/{d['id']}")
+                                        proof_url, _, _ = upload_file(proof, f"proofs/{d['id']}")
 
                                     due_dt = datetime.strptime(d['due_date'], '%Y-%m-%d').date()
                                     rep = 'BOM' if dt <= due_dt else 'RUIM'
@@ -380,7 +423,11 @@ else:
                                     elif mode == "Quitação Total": new_bal = 0
 
                                     stt = 'pago' if new_bal <= 0.5 else 'pendente'
-                                    supabase.table("loans").update({"remaining_amount": new_bal, "status": stt}).eq("id", d['id']).execute()
+                                    loan_upd = {"remaining_amount": new_bal, "status": stt}
+                                    if new_bal > 0.5:  # não quitado: avança o vencimento
+                                        anchor = d.get('due_day') or due_dt.day
+                                        loan_upd["due_date"] = str(next_due_date(anchor, due_dt))
+                                    supabase.table("loans").update(loan_upd).eq("id", d['id']).execute()
 
                                     st.session_state['payment_done'] = True
                                     st.rerun()
@@ -420,7 +467,7 @@ else:
                 <div style="border-left: 5px solid {alert_color}; background-color:#262730; padding:15px; border-radius:5px; margin-bottom:15px">
                     <h4 style="margin:0">{cli['name']}</h4>
                     <span>📱 {cli['phone']} | 📍 {cli['address']}</span><br>
-                    <span>💸 Dívida Atual: <b>R$ {divida:,.2f}</b></span>
+                    <span>💸 Dívida Atual: <b>{brl(divida)}</b></span>
                 </div>
                 """, unsafe_allow_html=True)
                 
@@ -440,7 +487,8 @@ else:
                         with st.spinner("Criando contrato..."):
                             supabase.table("loans").insert({
                                 "client_id": cli['id'], "original_amount": val, "remaining_amount": val,
-                                "interest_rate": rate, "due_date": str(due), "owner_id": st.session_state.user.id
+                                "interest_rate": rate, "due_date": str(due), "due_day": due.day,
+                                "owner_id": st.session_state.user.id
                             }).execute()
                         st.session_state['loan_created'] = True
                         st.rerun()
@@ -514,12 +562,12 @@ else:
         with st.form("cli"):
             c1, c2 = st.columns(2)
             nm = c1.text_input("Nome *")
-            cpf = c1.text_input("CPF *", max_chars=14)
-            tel = c1.text_input("Celular *", help="DDD+9 dígitos")
+            cpf = c1.text_input("CPF *", max_chars=14, placeholder="000.000.000-00")
+            tel = c1.text_input("Celular *", max_chars=15, placeholder="(00) 00000-0000")
             ref = c1.text_input("Referência *")
-            
-            rg = c2.text_input("RG")
-            em = c2.text_input("Email")
+
+            rg = c2.text_input("RG", max_chars=12, placeholder="00.000.000-0")
+            em = c2.text_input("Email", placeholder="exemplo@email.com")
             end = c2.text_area("Endereço *")
             files = st.file_uploader("Docs", accept_multiple_files=True)
 
@@ -541,11 +589,23 @@ else:
                         }).execute()
                         if res.data:
                             cid = res.data[0]['id']
+                            doc_fail = None
                             if files:
+                                uploads = []
                                 for f in files:
-                                    u, n = upload_file(f, cid)
-                                    if u: supabase.table("client_documents").insert({"client_id":cid,"file_name":n,"file_url":u}).execute()
-                            st.success("Salvo!")
+                                    u, n, err = upload_file(f, cid)
+                                    if err:
+                                        doc_fail = f"Erro ao enviar '{f.name}': {err}"
+                                        break
+                                    uploads.append((u, n))
+                            if doc_fail:
+                                supabase.table("clients").delete().eq("id", cid).execute()
+                                st.error(doc_fail)
+                            else:
+                                if files:
+                                    for u, n in uploads:
+                                        supabase.table("client_documents").insert({"client_id": cid, "file_name": n, "file_url": u}).execute()
+                                st.success("Salvo!")
                     except Exception as e: st.error(f"Erro: {e}")
 
     # --- 5. BASE DE CLIENTES ---
@@ -633,7 +693,7 @@ else:
                             if st.form_submit_button("📤 Enviar"):
                                 if new_docs:
                                     for f in new_docs:
-                                        u, n = upload_file(f, c['id'])
+                                        u, n, err = upload_file(f, c['id'])
                                         if u:
                                             supabase.table("client_documents").insert({"client_id": c['id'], "file_name": n, "file_url": u}).execute()
                                     st.success("Documento(s) enviado(s)!")
@@ -652,7 +712,7 @@ else:
                             st.dataframe(df_l, use_container_width=True)
                             if _admin:
                                 st.markdown("**✏️ Editar juros de um contrato:**")
-                                loan_opts = {f"Vence {l['due_date']} | Saldo R$ {float(l['remaining_amount']):.2f}": l for l in loans}
+                                loan_opts = {f"Vence {l['due_date']} | Saldo {brl(float(l['remaining_amount']))}": l for l in loans}
                                 sel_loan_lbl = st.selectbox("Selecione o contrato", list(loan_opts.keys()), key=f"sel_loan_{c['id']}")
                                 sel_loan = loan_opts[sel_loan_lbl]
                                 with st.form(f"edit_loan_{c['id']}"):
@@ -680,7 +740,7 @@ else:
                                     resp = prof['email'] if isinstance(prof, dict) else l.get('owner_id', '-')
                                     data_logs.append({
                                         "Data": dt_br,
-                                        "Valor (R$)": float(l['amount']),
+                                        "Valor (R$)": brl(float(l['amount'])),
                                         "Tipo": l['payment_type'],
                                         "Responsável": resp,
                                         "Comprovante": l.get('proof_url') or "",
@@ -688,7 +748,6 @@ else:
                                 st.dataframe(
                                     pd.DataFrame(data_logs),
                                     column_config={
-                                        "Valor (R$)": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f"),
                                         "Comprovante": st.column_config.LinkColumn("Comprovante", display_text="Ver"),
                                     },
                                     use_container_width=True,
@@ -721,18 +780,18 @@ else:
             total_cobrar = saldo_calc + multa + total_juros_atraso
 
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Saldo Devedor", f"R$ {saldo_calc:,.2f}")
-            col2.metric("Multa", f"R$ {multa:,.2f}")
-            col3.metric(f"Juros ({dias} dias)", f"R$ {total_juros_atraso:,.2f}",
-                        delta=f"R$ {juros_dia:,.2f}/dia", delta_color="off")
-            col4.metric("💥 Total a Cobrar", f"R$ {total_cobrar:,.2f}")
+            col1.metric("Saldo Devedor", brl(saldo_calc))
+            col2.metric("Multa", brl(multa))
+            col3.metric(f"Juros ({dias} dias)", brl(total_juros_atraso),
+                        delta=f"{brl(juros_dia)}/dia", delta_color="off")
+            col4.metric("💥 Total a Cobrar", brl(total_cobrar))
 
             st.info(f"""
 **Memória de cálculo:**
-- Saldo devedor: **R\\$ {saldo_calc:,.2f}**
-- Multa fixa: **R\\$ {multa:,.2f}**
-- Juros por atraso: R\\$ {juros_dia:,.2f}/dia × {dias} dias = **R\\$ {total_juros_atraso:,.2f}**
-- **Total: R\\$ {saldo_calc:,.2f} + R\\$ {multa:,.2f} + R\\$ {total_juros_atraso:,.2f} = R\\$ {total_cobrar:,.2f}**
+- Saldo devedor: **{brl(saldo_calc)}**
+- Multa fixa: **{brl(multa)}**
+- Juros por atraso: {brl(juros_dia)}/dia × {dias} dias = **{brl(total_juros_atraso)}**
+- **Total: {brl(saldo_calc)} + {brl(multa)} + {brl(total_juros_atraso)} = {brl(total_cobrar)}**
             """)
 
     # --- 7. GERENCIAR USUÁRIOS (somente admin) ---
